@@ -1,0 +1,16 @@
+[package]
+name = "skillsmgr-adapters"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+skillsmgr-core = { path = "../skillsmgr-core" }
+skillsmgr-parse = { path = "../skillsmgr-parse" }
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
