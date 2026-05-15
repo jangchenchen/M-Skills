@@ -1,3 +1,9 @@
 /target/
 /.DS_Store
 
+# Local agent guidance files; not shared with the remote.
+CLAUDE.md
+claude.md
+codex.md
+CODEX.md
+
