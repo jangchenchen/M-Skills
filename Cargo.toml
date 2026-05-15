@@ -3,6 +3,8 @@ members = [
   "crates/skillsmgr-core",
   "crates/skillsmgr-parse",
   "crates/skillsmgr-adapters",
+  "crates/skillsmgr-scan",
+  "crates/skillsmgr-service",
 ]
 resolver = "2"
 

@@ -1,0 +1,17 @@
+[package]
+name = "skillsmgr-scan"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+skillsmgr-core = { path = "../skillsmgr-core" }
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync"] }
+
+[dev-dependencies]
+skillsmgr-adapters = { path = "../skillsmgr-adapters" }
+skillsmgr-parse = { path = "../skillsmgr-parse" }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync"] }
