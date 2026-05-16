@@ -176,6 +176,13 @@ pub enum AdapterPresence {
 pub struct ScannedInstallation {
     pub artifact: Artifact,
     pub installation: Installation,
+    pub provenance: SourceProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SourceProvenance {
+    Owned,
+    Shared { from_tool: String },
 }
 
 #[async_trait]

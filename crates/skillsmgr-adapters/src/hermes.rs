@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
+// MVP: fixture-validated only, not field-tested.
 use async_trait::async_trait;
 use skillsmgr_core::{
     AdapterPresence, Artifact, ArtifactKind, Installation, Result, ScannedInstallation, Scope,
-    SkillsMgrError, Target, ToolAdapter,
+    SkillsMgrError, SourceProvenance, Target, ToolAdapter,
 };
 use skillsmgr_parse::parse_skill_dir;
 use tokio::fs;
@@ -91,6 +92,7 @@ impl ToolAdapter for HermesAdapter {
                 scanned.push(ScannedInstallation {
                     artifact: candidate.artifact,
                     installation,
+                    provenance: SourceProvenance::Owned,
                 });
             }
         }

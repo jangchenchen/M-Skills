@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use skillsmgr_core::{
     ensure_target_supports_kind, AdapterPresence, Artifact, ArtifactKind, Installation, Result,
-    ScannedInstallation, Scope, SkillsMgrError, Source, Target, ToolAdapter,
+    ScannedInstallation, Scope, SkillsMgrError, Source, SourceProvenance, Target, ToolAdapter,
 };
 use skillsmgr_parse::{parse_gemini_extension_dir, parse_skill_dir};
 use tokio::fs;
@@ -14,8 +14,32 @@ pub struct DirectoryLayout {
     kind: ArtifactKind,
     read_only: bool,
     target_for_scope: fn(Scope) -> Target,
-    global_root: PathBuf,
+    roots: Vec<SourceRoot>,
     project_relative_root: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceRoot {
+    path: PathBuf,
+    provenance: SourceProvenance,
+}
+
+impl SourceRoot {
+    pub fn owned(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            provenance: SourceProvenance::Owned,
+        }
+    }
+
+    pub fn shared(path: impl Into<PathBuf>, from_tool: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            provenance: SourceProvenance::Shared {
+                from_tool: from_tool.into(),
+            },
+        }
+    }
 }
 
 impl DirectoryLayout {
@@ -30,7 +54,7 @@ impl DirectoryLayout {
             kind: ArtifactKind::Skill,
             read_only: false,
             target_for_scope,
-            global_root: global_root.into(),
+            roots: vec![SourceRoot::owned(global_root)],
             project_relative_root: project_relative_root.into(),
         }
     }
@@ -46,7 +70,7 @@ impl DirectoryLayout {
             kind: ArtifactKind::Skill,
             read_only: true,
             target_for_scope,
-            global_root: global_root.into(),
+            roots: vec![SourceRoot::owned(global_root)],
             project_relative_root: project_relative_root.into(),
         }
     }
@@ -62,14 +86,44 @@ impl DirectoryLayout {
             kind: ArtifactKind::Extension,
             read_only: false,
             target_for_scope,
-            global_root: global_root.into(),
+            roots: vec![SourceRoot::owned(global_root)],
             project_relative_root: project_relative_root.into(),
         }
     }
 
-    fn root_for_scope(&self, scope: &Scope) -> PathBuf {
+    pub fn skill_with_roots(
+        id: &'static str,
+        target_for_scope: fn(Scope) -> Target,
+        roots: Vec<SourceRoot>,
+        project_relative_root: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            id,
+            kind: ArtifactKind::Skill,
+            read_only: false,
+            target_for_scope,
+            roots,
+            project_relative_root: project_relative_root.into(),
+        }
+    }
+
+    fn roots_for_scope(&self, scope: &Scope) -> Vec<SourceRoot> {
         match scope {
-            Scope::Global => self.global_root.clone(),
+            Scope::Global => self.roots.clone(),
+            Scope::Project(project_root) => vec![SourceRoot::owned(
+                project_root.join(&self.project_relative_root),
+            )],
+        }
+    }
+
+    fn owned_root_for_scope(&self, scope: &Scope) -> PathBuf {
+        match scope {
+            Scope::Global => self
+                .roots
+                .iter()
+                .find(|root| matches!(root.provenance, SourceProvenance::Owned))
+                .map(|root| root.path.clone())
+                .unwrap_or_else(|| self.roots[0].path.clone()),
             Scope::Project(project_root) => project_root.join(&self.project_relative_root),
         }
     }
@@ -94,53 +148,56 @@ impl ToolAdapter for DirectoryLayout {
     }
 
     async fn scan(&self, scope: Scope) -> Result<Vec<ScannedInstallation>> {
-        let root = self.root_for_scope(&scope);
-        if !fs::try_exists(&root)
-            .await
-            .map_err(|source| fs_error(&root, source))?
-        {
-            return Ok(Vec::new());
-        }
-
         let mut scanned = Vec::new();
-        let mut entries = fs::read_dir(&root)
-            .await
-            .map_err(|source| fs_error(&root, source))?;
-
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|source| fs_error(&root, source))?
-        {
-            let path = entry.path();
-            if !entry
-                .file_type()
+        for source_root in self.roots_for_scope(&scope) {
+            let root = source_root.path;
+            if !fs::try_exists(&root)
                 .await
-                .map_err(|source| fs_error(&path, source))?
-                .is_dir()
+                .map_err(|source| fs_error(&root, source))?
             {
                 continue;
             }
 
-            let candidate = match self.kind {
-                ArtifactKind::Skill => parse_skill_dir(&path).await,
-                ArtifactKind::Extension => parse_gemini_extension_dir(&path).await,
-                ArtifactKind::Workflow => continue,
-            };
+            let mut entries = fs::read_dir(&root)
+                .await
+                .map_err(|source| fs_error(&root, source))?;
 
-            let Ok(candidate) = candidate else {
-                continue;
-            };
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .map_err(|source| fs_error(&root, source))?
+            {
+                let path = entry.path();
+                if !entry
+                    .file_type()
+                    .await
+                    .map_err(|source| fs_error(&path, source))?
+                    .is_dir()
+                {
+                    continue;
+                }
 
-            let installation = Installation::enabled(
-                &candidate.artifact,
-                self.target_for_scope(scope.clone()),
-                &path,
-            );
-            scanned.push(ScannedInstallation {
-                artifact: candidate.artifact,
-                installation,
-            });
+                let candidate = match self.kind {
+                    ArtifactKind::Skill => parse_skill_dir(&path).await,
+                    ArtifactKind::Extension => parse_gemini_extension_dir(&path).await,
+                    ArtifactKind::Workflow => continue,
+                };
+
+                let Ok(candidate) = candidate else {
+                    continue;
+                };
+
+                let installation = Installation::enabled(
+                    &candidate.artifact,
+                    self.target_for_scope(scope.clone()),
+                    &path,
+                );
+                scanned.push(ScannedInstallation {
+                    artifact: candidate.artifact,
+                    installation,
+                    provenance: source_root.provenance.clone(),
+                });
+            }
         }
 
         Ok(scanned)
@@ -154,7 +211,7 @@ impl ToolAdapter for DirectoryLayout {
         let target = self.target_for_scope(scope.clone());
         ensure_target_supports_kind(&target, artifact.kind)?;
 
-        let root = self.root_for_scope(&scope);
+        let root = self.owned_root_for_scope(&scope);
         let destination = root.join(&artifact.name);
         if fs::try_exists(&destination)
             .await
@@ -201,14 +258,12 @@ impl ToolAdapter for DirectoryLayout {
     }
 
     async fn detect(&self) -> AdapterPresence {
-        if self.global_root.exists() {
+        // MVP: Available means at least one configured source directory exists.
+        if self.roots.iter().any(|root| root.path.exists()) {
             AdapterPresence::Available
         } else {
             AdapterPresence::Missing {
-                reason: format!(
-                    "{} global directory does not exist",
-                    self.global_root.display()
-                ),
+                reason: format!("no configured {} source directories exist", self.id),
             }
         }
     }
@@ -256,7 +311,7 @@ fn copy_dir_contents(source: &Path, destination: &Path) -> Result<()> {
 mod tests {
     use std::fs;
 
-    use skillsmgr_core::{Artifact, ArtifactKind, Scope, Source, ToolAdapter};
+    use skillsmgr_core::{Artifact, ArtifactKind, Scope, Source, SourceProvenance, ToolAdapter};
     use tempfile::tempdir;
 
     use super::*;
@@ -283,6 +338,7 @@ mod tests {
         assert_eq!(scanned.len(), 1);
         assert_eq!(scanned[0].artifact.name, "one");
         assert_eq!(scanned[0].installation.target.tool_id(), "codex");
+        assert_eq!(scanned[0].provenance, SourceProvenance::Owned);
     }
 
     #[tokio::test]
@@ -367,5 +423,43 @@ mod tests {
                 operation: "uninstall"
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn scans_owned_and_shared_global_roots() {
+        let home = tempdir().unwrap();
+        let owned_root = home.path().join("owned");
+        let shared_root = home.path().join("shared");
+        fs::create_dir_all(owned_root.join("owned-skill")).unwrap();
+        fs::create_dir_all(shared_root.join("shared-skill")).unwrap();
+        fs::write(owned_root.join("owned-skill").join("SKILL.md"), "# Owned\n").unwrap();
+        fs::write(
+            shared_root.join("shared-skill").join("SKILL.md"),
+            "# Shared\n",
+        )
+        .unwrap();
+        let adapter = DirectoryLayout::skill_with_roots(
+            "multi",
+            |scope| Target::Opencode { scope },
+            vec![
+                SourceRoot::owned(&owned_root),
+                SourceRoot::shared(&shared_root, "claude-code"),
+            ],
+            ".opencode/skills",
+        );
+
+        let scanned = adapter.scan(Scope::Global).await.unwrap();
+
+        assert_eq!(scanned.len(), 2);
+        assert!(scanned.iter().any(|item| {
+            item.artifact.name == "owned-skill" && item.provenance == SourceProvenance::Owned
+        }));
+        assert!(scanned.iter().any(|item| {
+            item.artifact.name == "shared-skill"
+                && item.provenance
+                    == SourceProvenance::Shared {
+                        from_tool: "claude-code".to_string(),
+                    }
+        }));
     }
 }

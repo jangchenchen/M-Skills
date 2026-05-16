@@ -7,4 +7,4 @@ pub mod hermes;
 pub mod openclaw;
 pub mod opencode;
 
-pub use simple_dir_adapter::DirectoryLayout;
+pub use simple_dir_adapter::{DirectoryLayout, SourceRoot};

@@ -94,6 +94,7 @@ mod tests {
     use std::fs;
 
     use skillsmgr_adapters::{claude_code, codex, opencode};
+    use skillsmgr_core::SourceProvenance;
     use tempfile::tempdir;
 
     use super::*;
@@ -142,7 +143,21 @@ mod tests {
         assert_eq!(codex.items[0].artifact.name, "review-pr");
 
         let opencode = results.iter().find(|r| r.adapter_id == "opencode").unwrap();
-        assert!(opencode.items.is_empty());
+        assert_eq!(opencode.items.len(), 2);
+        assert!(opencode.items.iter().any(|item| {
+            item.artifact.name == "polish-code"
+                && item.provenance
+                    == SourceProvenance::Shared {
+                        from_tool: "claude-code".to_string(),
+                    }
+        }));
+        assert!(opencode.items.iter().any(|item| {
+            item.artifact.name == "review-pr"
+                && item.provenance
+                    == SourceProvenance::Shared {
+                        from_tool: "shared-global".to_string(),
+                    }
+        }));
     }
 
     #[tokio::test]

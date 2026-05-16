@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+// MVP: fixture-validated only, not field-tested.
 use skillsmgr_core::Target;
 
 use crate::DirectoryLayout;

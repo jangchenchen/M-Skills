@@ -63,6 +63,9 @@ async fn main() -> ExitCode {
                     path = installation.installation.on_disk_path.display(),
                 );
             }
+            if !group.also_visible_to.is_empty() {
+                println!("        visible to: {}", group.also_visible_to.join(", "));
+            }
         }
     }
 

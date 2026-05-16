@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use skillsmgr_adapters::{claude_code, codex, gemini, hermes::HermesAdapter, opencode};
 use skillsmgr_core::{
-    AdapterPresence, Artifact, ArtifactKind, ScannedInstallation, Scope, ToolAdapter,
+    AdapterPresence, Artifact, ArtifactKind, ScannedInstallation, Scope, SourceProvenance,
+    ToolAdapter,
 };
 use skillsmgr_scan::{default_scopes, discover_project_root, scan_all, ScanError, ScanResult};
 
@@ -20,6 +21,7 @@ pub struct ArtifactGroup {
     pub description: String,
     pub version: Option<String>,
     pub installations: Vec<ScannedInstallation>,
+    pub also_visible_to: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,17 +95,59 @@ fn insert_into_group(groups: &mut Vec<ArtifactGroup>, item: ScannedInstallation)
         .find(|group| group.kind == item.artifact.kind && group.name == item.artifact.name)
     {
         merge_metadata(group, &item.artifact);
+        if merge_shared_visibility(group, &item) {
+            return;
+        }
         group.installations.push(item);
         return;
     }
 
+    let also_visible_to = shared_visibility(&item).into_iter().collect();
     groups.push(ArtifactGroup {
         name: item.artifact.name.clone(),
         kind: item.artifact.kind,
         description: item.artifact.description.clone(),
         version: item.artifact.version.clone(),
         installations: vec![item],
+        also_visible_to,
     });
+}
+
+fn merge_shared_visibility(group: &mut ArtifactGroup, item: &ScannedInstallation) -> bool {
+    let same_path = group
+        .installations
+        .iter()
+        .position(|existing| existing.installation.on_disk_path == item.installation.on_disk_path);
+
+    let Some(index) = same_path else {
+        return false;
+    };
+
+    if let Some(tool) = shared_visibility(item) {
+        push_unique(&mut group.also_visible_to, tool);
+    }
+
+    if item.provenance == SourceProvenance::Owned
+        && group.installations[index].provenance != SourceProvenance::Owned
+    {
+        group.installations[index] = item.clone();
+    }
+
+    true
+}
+
+fn shared_visibility(item: &ScannedInstallation) -> Option<String> {
+    match &item.provenance {
+        SourceProvenance::Owned => None,
+        SourceProvenance::Shared { .. } => Some(item.installation.target.tool_id().to_string()),
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.contains(&value) {
+        values.push(value);
+        values.sort();
+    }
 }
 
 fn merge_metadata(group: &mut ArtifactGroup, artifact: &Artifact) {
@@ -168,6 +212,7 @@ mod tests {
             .find(|g| g.name == "polish-code")
             .unwrap();
         assert_eq!(polish.installations.len(), 2);
+        assert_eq!(polish.also_visible_to, vec!["opencode"]);
         assert_eq!(polish.description, "Polish code");
         assert_eq!(polish.version.as_deref(), Some("1.0.0"));
 
@@ -177,6 +222,34 @@ mod tests {
             .find(|g| g.name == "review-pr")
             .unwrap();
         assert_eq!(review.installations.len(), 1);
+        assert_eq!(review.also_visible_to, vec!["opencode"]);
+    }
+
+    #[tokio::test]
+    async fn inventory_keeps_owned_installation_when_shared_scan_hits_same_path() {
+        let home = tempdir().unwrap();
+        write_skill(
+            &home.path().join(".claude/skills"),
+            "polish-code",
+            "Polish code",
+            Some("1.0.0"),
+        );
+
+        let service = Service::with_home(home.path());
+        let inventory = service.inventory_for_scopes(vec![Scope::Global]).await;
+
+        let polish = inventory
+            .groups
+            .iter()
+            .find(|g| g.name == "polish-code")
+            .unwrap();
+
+        assert_eq!(polish.installations.len(), 1);
+        assert_eq!(
+            polish.installations[0].installation.target.tool_id(),
+            "claude-code"
+        );
+        assert_eq!(polish.also_visible_to, vec!["opencode"]);
     }
 
     #[tokio::test]
