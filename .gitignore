@@ -1,5 +1,10 @@
 /target/
 /.DS_Store
+/node_modules/
+/dist/
+/.claude/
+/tsconfig.tsbuildinfo
+/screenshot-*.png
 
 # Local agent guidance files; not shared with the remote.
 CLAUDE.md

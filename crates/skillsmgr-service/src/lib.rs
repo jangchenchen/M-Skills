@@ -6,7 +6,7 @@ use skillsmgr_core::{
     AdapterPresence, Artifact, ArtifactKind, Installation, Result, ScannedInstallation, Scope,
     SkillsMgrError, Source, SourceProvenance, Target, ToolAdapter,
 };
-use skillsmgr_fetch::{preview_github_import, preview_local_import, ImportPreview};
+use skillsmgr_fetch::{preview_github_import, preview_local_import, ImportCandidate, ImportPreview};
 use skillsmgr_registry::Registry;
 use skillsmgr_scan::{default_scopes, discover_project_root, scan_all, ScanError, ScanResult};
 
@@ -121,6 +121,35 @@ impl Service {
                 .lock()
                 .await
                 .record_installation(artifact, &installation)?;
+        }
+        Ok(installation)
+    }
+
+    /// Install from a staged import candidate. Uses `staged_root` for the file
+    /// copy regardless of origin (GitHub or local), then records the original
+    /// `artifact.source` in the registry.
+    pub async fn install_from_candidate(
+        &self,
+        candidate: &ImportCandidate,
+        target: Target,
+        scopes: Vec<Scope>,
+    ) -> Result<Installation> {
+        let scope = target_scope(&target)?;
+        let adapter = self.adapter_for_target(&target)?;
+
+        let mut copy_artifact = candidate.artifact.clone();
+        copy_artifact.source = Source::Local {
+            path: candidate.staged_root.clone(),
+        };
+
+        self.ensure_no_source_conflict(&copy_artifact, scopes).await?;
+        let installation = adapter.install(&copy_artifact, scope).await?;
+
+        if let Some(registry) = &self.registry {
+            registry
+                .lock()
+                .await
+                .record_installation(&candidate.artifact, &installation)?;
         }
         Ok(installation)
     }
