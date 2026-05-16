@@ -1,0 +1,437 @@
+use std::path::{Path, PathBuf};
+
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection, OptionalExtension};
+use skillsmgr_core::{
+    Artifact, Installation, Result, ScannedInstallation, SkillsMgrError, Source, Status,
+};
+use uuid::Uuid;
+
+pub struct Registry {
+    connection: Connection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryArtifact {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: String,
+    pub status: String,
+    pub installed_version: Option<String>,
+    pub on_disk_path: Option<PathBuf>,
+    pub source_url: Option<String>,
+    pub commit_sha: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryInstallation {
+    pub id: Uuid,
+    pub artifact_id: Uuid,
+    pub target: String,
+    pub status: String,
+    pub installed_version: Option<String>,
+    pub on_disk_path: PathBuf,
+    pub installed_at: DateTime<Utc>,
+}
+
+impl Registry {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| fs_error(parent, source))?;
+        }
+        let connection = Connection::open(path).map_err(registry_error)?;
+        let registry = Self { connection };
+        registry.migrate()?;
+        Ok(registry)
+    }
+
+    pub fn in_memory() -> Result<Self> {
+        let registry = Self {
+            connection: Connection::open_in_memory().map_err(registry_error)?,
+        };
+        registry.migrate()?;
+        Ok(registry)
+    }
+
+    pub fn upsert_scan_results(&mut self, scanned: &[ScannedInstallation]) -> Result<()> {
+        let transaction = self.connection.transaction().map_err(registry_error)?;
+        for item in scanned {
+            upsert_artifact_tx(&transaction, &item.artifact, "installed")?;
+            upsert_source_metadata_tx(&transaction, &item.artifact)?;
+            upsert_installation_tx(&transaction, &item.installation)?;
+        }
+        transaction.commit().map_err(registry_error)
+    }
+
+    pub fn record_installation(
+        &mut self,
+        artifact: &Artifact,
+        installation: &Installation,
+    ) -> Result<()> {
+        let transaction = self.connection.transaction().map_err(registry_error)?;
+        upsert_artifact_tx(&transaction, artifact, "installed")?;
+        upsert_source_metadata_tx(&transaction, artifact)?;
+        upsert_installation_tx(&transaction, installation)?;
+        transaction.commit().map_err(registry_error)
+    }
+
+    pub fn record_uninstall(&self, installation_id: Uuid) -> Result<()> {
+        self.connection
+            .execute(
+                "UPDATE installations SET status = 'removed' WHERE id = ?1",
+                params![installation_id.to_string()],
+            )
+            .map_err(registry_error)?;
+        Ok(())
+    }
+
+    pub fn artifact_by_name(&self, name: &str) -> Result<Option<RegistryArtifact>> {
+        self.connection
+            .query_row(
+                "SELECT a.id, a.name, a.kind, a.status, a.installed_version, \
+                        a.on_disk_path, s.source_url, s.commit_sha \
+                 FROM artifacts a \
+                 LEFT JOIN source_metadata s ON s.artifact_id = a.id \
+                 WHERE a.name = ?1",
+                params![name],
+                read_registry_artifact,
+            )
+            .optional()
+            .map_err(registry_error)
+    }
+
+    pub fn installations(&self) -> Result<Vec<RegistryInstallation>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, artifact_id, target, status, installed_version, on_disk_path, installed_at \
+                 FROM installations ORDER BY target, on_disk_path",
+            )
+            .map_err(registry_error)?;
+        let rows = statement
+            .query_map([], read_registry_installation)
+            .map_err(registry_error)?;
+
+        let mut installations = Vec::new();
+        for row in rows {
+            installations.push(row.map_err(registry_error)?);
+        }
+        Ok(installations)
+    }
+
+    fn migrate(&self) -> Result<()> {
+        self.connection
+            .execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS artifacts (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    installed_version TEXT,
+                    on_disk_path TEXT,
+                    source_json TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS installations (
+                    id TEXT PRIMARY KEY,
+                    artifact_id TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    installed_version TEXT,
+                    on_disk_path TEXT NOT NULL,
+                    installed_at TEXT NOT NULL,
+                    target_json TEXT NOT NULL,
+                    FOREIGN KEY (artifact_id) REFERENCES artifacts(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS source_metadata (
+                    artifact_id TEXT PRIMARY KEY,
+                    source_url TEXT,
+                    commit_sha TEXT,
+                    local_path TEXT,
+                    source_json TEXT NOT NULL,
+                    FOREIGN KEY (artifact_id) REFERENCES artifacts(id)
+                );
+                ",
+            )
+            .map_err(registry_error)
+    }
+}
+
+fn upsert_artifact_tx(connection: &Connection, artifact: &Artifact, status: &str) -> Result<()> {
+    let source_json = serde_json::to_string(&artifact.source).map_err(json_error)?;
+    connection
+        .execute(
+            "INSERT INTO artifacts (
+                id, name, description, kind, status, installed_version, on_disk_path, source_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                description = excluded.description,
+                kind = excluded.kind,
+                status = excluded.status,
+                installed_version = excluded.installed_version,
+                source_json = excluded.source_json",
+            params![
+                artifact.id.to_string(),
+                artifact.name,
+                artifact.description,
+                format!("{:?}", artifact.kind),
+                status,
+                artifact.version,
+                source_json,
+            ],
+        )
+        .map_err(registry_error)?;
+    Ok(())
+}
+
+fn upsert_installation_tx(connection: &Connection, installation: &Installation) -> Result<()> {
+    let target_json = serde_json::to_string(&installation.target).map_err(json_error)?;
+    connection
+        .execute(
+            "INSERT INTO installations (
+                id, artifact_id, target, status, installed_version, on_disk_path, installed_at, target_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                artifact_id = excluded.artifact_id,
+                target = excluded.target,
+                status = excluded.status,
+                installed_version = excluded.installed_version,
+                on_disk_path = excluded.on_disk_path,
+                installed_at = excluded.installed_at,
+                target_json = excluded.target_json",
+            params![
+                installation.id.to_string(),
+                installation.artifact_id.to_string(),
+                installation.target.tool_id(),
+                status_label(&installation.status),
+                installation.installed_version,
+                installation.on_disk_path.to_string_lossy(),
+                installation.installed_at.to_rfc3339(),
+                target_json,
+            ],
+        )
+        .map_err(registry_error)?;
+    connection
+        .execute(
+            "UPDATE artifacts
+             SET status = ?1,
+                 installed_version = ?2,
+                 on_disk_path = ?3
+             WHERE id = ?4",
+            params![
+                status_label(&installation.status),
+                installation.installed_version,
+                installation.on_disk_path.to_string_lossy(),
+                installation.artifact_id.to_string(),
+            ],
+        )
+        .map_err(registry_error)?;
+    Ok(())
+}
+
+fn upsert_source_metadata_tx(connection: &Connection, artifact: &Artifact) -> Result<()> {
+    let (source_url, commit_sha, local_path) = match &artifact.source {
+        Source::GitHub { url, rev } => (Some(url.clone()), Some(rev.clone()), None),
+        Source::Local { path } => (None, None, Some(path.to_string_lossy().to_string())),
+        Source::Bundled | Source::Unknown => (None, None, None),
+    };
+    let source_json = serde_json::to_string(&artifact.source).map_err(json_error)?;
+    connection
+        .execute(
+            "INSERT INTO source_metadata (
+                artifact_id, source_url, commit_sha, local_path, source_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(artifact_id) DO UPDATE SET
+                source_url = excluded.source_url,
+                commit_sha = excluded.commit_sha,
+                local_path = excluded.local_path,
+                source_json = excluded.source_json",
+            params![
+                artifact.id.to_string(),
+                source_url,
+                commit_sha,
+                local_path,
+                source_json,
+            ],
+        )
+        .map_err(registry_error)?;
+    Ok(())
+}
+
+fn read_registry_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryArtifact> {
+    Ok(RegistryArtifact {
+        id: parse_uuid_row(row, 0)?,
+        name: row.get(1)?,
+        kind: row.get(2)?,
+        status: row.get(3)?,
+        installed_version: row.get(4)?,
+        on_disk_path: row.get::<_, Option<String>>(5)?.map(PathBuf::from),
+        source_url: row.get(6)?,
+        commit_sha: row.get(7)?,
+    })
+}
+
+fn read_registry_installation(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryInstallation> {
+    let installed_at: String = row.get(6)?;
+    let installed_at = DateTime::parse_from_rfc3339(&installed_at)
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?
+        .with_timezone(&Utc);
+
+    Ok(RegistryInstallation {
+        id: parse_uuid_row(row, 0)?,
+        artifact_id: parse_uuid_row(row, 1)?,
+        target: row.get(2)?,
+        status: row.get(3)?,
+        installed_version: row.get(4)?,
+        on_disk_path: PathBuf::from(row.get::<_, String>(5)?),
+        installed_at,
+    })
+}
+
+fn parse_uuid_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Uuid> {
+    let value: String = row.get(index)?;
+    Uuid::parse_str(&value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
+}
+
+fn status_label(status: &Status) -> String {
+    match status {
+        Status::Enabled => "enabled".to_string(),
+        Status::Disabled => "disabled".to_string(),
+        Status::Broken { reason } => format!("broken:{reason}"),
+    }
+}
+
+fn fs_error(path: impl AsRef<Path>, source: std::io::Error) -> SkillsMgrError {
+    SkillsMgrError::Fs {
+        path: path.as_ref().to_path_buf(),
+        source,
+    }
+}
+
+fn registry_error(error: rusqlite::Error) -> SkillsMgrError {
+    SkillsMgrError::Registry(error.to_string())
+}
+
+fn json_error(error: serde_json::Error) -> SkillsMgrError {
+    SkillsMgrError::Registry(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use skillsmgr_core::{ArtifactKind, Scope, Source, Target};
+
+    use super::*;
+
+    #[test]
+    fn rebuilds_registry_from_scan_results() {
+        let mut registry = Registry::in_memory().unwrap();
+        let artifact = Artifact::new(
+            "demo",
+            "Demo",
+            Some("1.0.0".to_string()),
+            ArtifactKind::Skill,
+            Source::GitHub {
+                url: "https://github.com/example/demo".to_string(),
+                rev: "abc123".to_string(),
+            },
+        );
+        let installation = Installation::enabled(
+            &artifact,
+            Target::Codex {
+                scope: Scope::Global,
+            },
+            "/tmp/demo",
+        );
+        let scanned = ScannedInstallation {
+            artifact: artifact.clone(),
+            installation: installation.clone(),
+            provenance: skillsmgr_core::SourceProvenance::Owned,
+        };
+
+        registry.upsert_scan_results(&[scanned]).unwrap();
+
+        let stored = registry.artifact_by_name("demo").unwrap().unwrap();
+        assert_eq!(stored.name, "demo");
+        assert_eq!(stored.kind, "Skill");
+        assert_eq!(stored.status, "enabled");
+        assert_eq!(stored.installed_version.as_deref(), Some("1.0.0"));
+        assert_eq!(
+            stored.source_url.as_deref(),
+            Some("https://github.com/example/demo")
+        );
+        assert_eq!(stored.commit_sha.as_deref(), Some("abc123"));
+
+        let installations = registry.installations().unwrap();
+        assert_eq!(installations.len(), 1);
+        assert_eq!(installations[0].target, "codex");
+    }
+
+    #[test]
+    fn install_updates_registry_after_filesystem_success() {
+        let mut registry = Registry::in_memory().unwrap();
+        let artifact = Artifact::new(
+            "demo",
+            "Demo",
+            None,
+            ArtifactKind::Skill,
+            Source::Local {
+                path: "/tmp/source".into(),
+            },
+        );
+        let installation = Installation::enabled(
+            &artifact,
+            Target::ClaudeCode {
+                scope: Scope::Global,
+            },
+            "/tmp/installed/demo",
+        );
+
+        registry
+            .record_installation(&artifact, &installation)
+            .unwrap();
+
+        let stored = registry.artifact_by_name("demo").unwrap().unwrap();
+        assert_eq!(
+            stored.on_disk_path.as_deref(),
+            Some(Path::new("/tmp/installed/demo"))
+        );
+        assert_eq!(registry.installations().unwrap()[0].status, "enabled");
+    }
+
+    #[test]
+    fn uninstall_marks_installation_removed() {
+        let mut registry = Registry::in_memory().unwrap();
+        let artifact = Artifact::new("demo", "Demo", None, ArtifactKind::Skill, Source::Unknown);
+        let installation = Installation::enabled(
+            &artifact,
+            Target::ClaudeCode {
+                scope: Scope::Global,
+            },
+            "/tmp/installed/demo",
+        );
+        registry
+            .record_installation(&artifact, &installation)
+            .unwrap();
+
+        registry.record_uninstall(installation.id).unwrap();
+
+        assert_eq!(registry.installations().unwrap()[0].status, "removed");
+    }
+}

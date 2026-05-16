@@ -12,11 +12,30 @@ pub enum SkillsMgrError {
     #[error("artifact kind {kind:?} is not supported by target {target:?}")]
     UnsupportedKind { kind: ArtifactKind, target: Target },
 
+    #[error("adapter {adapter_id} does not support target {target:?}")]
+    UnsupportedTarget { adapter_id: String, target: Target },
+
     #[error("artifact conflict: {name} already exists at {path}")]
     Conflict { name: String, path: PathBuf },
 
+    #[error("artifact conflict: {name} from {existing_source:?} conflicts with {new_source:?}")]
+    SourceConflict {
+        name: String,
+        existing_source: Source,
+        new_source: Source,
+    },
+
     #[error("invalid artifact at {path}: {reason}")]
     InvalidArtifact { path: PathBuf, reason: String },
+
+    #[error("import source {input} is not supported")]
+    UnsupportedImportSource { input: String },
+
+    #[error("import source staged at {path} has no supported artifacts")]
+    NoSupportedArtifacts { path: PathBuf },
+
+    #[error("unsafe path {path}: {reason}")]
+    UnsafePath { path: PathBuf, reason: String },
 
     #[error("filesystem error at {path}: {source}")]
     Fs {
@@ -24,6 +43,12 @@ pub enum SkillsMgrError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("git error while importing {input}: {message}")]
+    Git { input: String, message: String },
+
+    #[error("registry error: {0}")]
+    Registry(String),
 
     #[error("{tool} adapter is read-only for {operation}")]
     ReadOnly {

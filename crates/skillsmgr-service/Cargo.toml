@@ -8,6 +8,8 @@ repository.workspace = true
 [dependencies]
 skillsmgr-core = { path = "../skillsmgr-core" }
 skillsmgr-adapters = { path = "../skillsmgr-adapters" }
+skillsmgr-fetch = { path = "../skillsmgr-fetch" }
+skillsmgr-registry = { path = "../skillsmgr-registry" }
 skillsmgr-scan = { path = "../skillsmgr-scan" }
 tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync"] }
 

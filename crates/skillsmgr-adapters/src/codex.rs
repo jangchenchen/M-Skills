@@ -5,12 +5,14 @@ use skillsmgr_core::Target;
 use crate::DirectoryLayout;
 
 pub fn adapter(home: impl Into<PathBuf>) -> DirectoryLayout {
+    let home = home.into();
     DirectoryLayout::skill(
         "codex",
         |scope| Target::Codex { scope },
-        home.into().join(".agents/skills"),
+        home.join(".agents/skills"),
         ".agents/skills",
     )
+    .with_config_path(home.join(".codex/config.toml"))
 }
 
 pub fn shared_global_adapter(home: impl Into<PathBuf>) -> DirectoryLayout {

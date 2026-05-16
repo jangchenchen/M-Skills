@@ -2,8 +2,10 @@
 members = [
   "crates/skillsmgr-core",
   "crates/skillsmgr-parse",
+  "crates/skillsmgr-fetch",
   "crates/skillsmgr-adapters",
   "crates/skillsmgr-scan",
+  "crates/skillsmgr-registry",
   "crates/skillsmgr-service",
 ]
 resolver = "2"
@@ -23,4 +25,7 @@ thiserror = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 tempfile = "3"
-
+gix = { version = "0.83", default-features = false, features = ["blocking-http-transport-reqwest-rust-tls", "sha1", "worktree-mutation"] }
+rusqlite = { version = "0.39", features = ["bundled", "chrono", "uuid"] }
+walkdir = "2"
+toml_edit = "0.25"

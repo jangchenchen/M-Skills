@@ -7,12 +7,14 @@ use skillsmgr_core::{
 };
 use skillsmgr_parse::{parse_gemini_extension_dir, parse_skill_dir};
 use tokio::fs;
+use toml_edit::{value, ArrayOfTables, DocumentMut, Item, Table};
 
 #[derive(Debug, Clone)]
 pub struct DirectoryLayout {
     id: &'static str,
     kind: ArtifactKind,
     read_only: bool,
+    config_path: Option<PathBuf>,
     target_for_scope: fn(Scope) -> Target,
     roots: Vec<SourceRoot>,
     project_relative_root: PathBuf,
@@ -53,6 +55,7 @@ impl DirectoryLayout {
             id,
             kind: ArtifactKind::Skill,
             read_only: false,
+            config_path: None,
             target_for_scope,
             roots: vec![SourceRoot::owned(global_root)],
             project_relative_root: project_relative_root.into(),
@@ -69,6 +72,7 @@ impl DirectoryLayout {
             id,
             kind: ArtifactKind::Skill,
             read_only: true,
+            config_path: None,
             target_for_scope,
             roots: vec![SourceRoot::owned(global_root)],
             project_relative_root: project_relative_root.into(),
@@ -85,6 +89,7 @@ impl DirectoryLayout {
             id,
             kind: ArtifactKind::Extension,
             read_only: false,
+            config_path: None,
             target_for_scope,
             roots: vec![SourceRoot::owned(global_root)],
             project_relative_root: project_relative_root.into(),
@@ -101,10 +106,16 @@ impl DirectoryLayout {
             id,
             kind: ArtifactKind::Skill,
             read_only: false,
+            config_path: None,
             target_for_scope,
             roots,
             project_relative_root: project_relative_root.into(),
         }
+    }
+
+    pub fn with_config_path(mut self, config_path: impl Into<PathBuf>) -> Self {
+        self.config_path = Some(config_path.into());
+        self
     }
 
     fn roots_for_scope(&self, scope: &Scope) -> Vec<SourceRoot> {
@@ -237,6 +248,21 @@ impl ToolAdapter for DirectoryLayout {
             return Err(self.read_only_error("uninstall"));
         }
 
+        if installation.target.tool_id() != self.id {
+            return Err(SkillsMgrError::UnsupportedTarget {
+                adapter_id: self.id.to_string(),
+                target: installation.target.clone(),
+            });
+        }
+        let managed_root =
+            self.owned_root_for_scope(installation.target.scope().ok_or_else(|| {
+                SkillsMgrError::UnsupportedTarget {
+                    adapter_id: self.id.to_string(),
+                    target: installation.target.clone(),
+                }
+            })?);
+        ensure_managed_child(&managed_root, &installation.on_disk_path)?;
+
         if installation.on_disk_path.exists() {
             fs::remove_dir_all(&installation.on_disk_path)
                 .await
@@ -245,16 +271,38 @@ impl ToolAdapter for DirectoryLayout {
         Ok(())
     }
 
-    async fn enable(&self, _installation: &Installation) -> Result<()> {
+    async fn enable(&self, installation: &Installation) -> Result<()> {
         if self.read_only {
             return Err(self.read_only_error("enable"));
         }
+        if installation.target.tool_id() != self.id {
+            return Err(SkillsMgrError::UnsupportedTarget {
+                adapter_id: self.id.to_string(),
+                target: installation.target.clone(),
+            });
+        }
 
+        if let Some(config_path) = &self.config_path {
+            set_skill_config_enabled(config_path, installation, true).await?;
+        }
         Ok(())
     }
 
-    async fn disable(&self, _installation: &Installation) -> Result<()> {
-        Err(self.read_only_error("disable"))
+    async fn disable(&self, installation: &Installation) -> Result<()> {
+        if self.read_only {
+            return Err(self.read_only_error("disable"));
+        }
+        if installation.target.tool_id() != self.id {
+            return Err(SkillsMgrError::UnsupportedTarget {
+                adapter_id: self.id.to_string(),
+                target: installation.target.clone(),
+            });
+        }
+
+        let Some(config_path) = &self.config_path else {
+            return Err(self.read_only_error("disable"));
+        };
+        set_skill_config_enabled(config_path, installation, false).await
     }
 
     async fn detect(&self) -> AdapterPresence {
@@ -305,6 +353,105 @@ fn copy_dir_contents(source: &Path, destination: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn ensure_managed_child(managed_root: &Path, path: &Path) -> Result<()> {
+    if path.parent() != Some(managed_root) {
+        return Err(SkillsMgrError::UnsafePath {
+            path: path.to_path_buf(),
+            reason: format!("path is not directly under {}", managed_root.display()),
+        });
+    }
+    Ok(())
+}
+
+async fn set_skill_config_enabled(
+    config_path: &Path,
+    installation: &Installation,
+    enabled: bool,
+) -> Result<()> {
+    let config_path = config_path.to_path_buf();
+    let error_path = config_path.clone();
+    let installation = installation.clone();
+    tokio::task::spawn_blocking(move || {
+        set_skill_config_enabled_blocking(&config_path, &installation, enabled)
+    })
+    .await
+    .map_err(|error| SkillsMgrError::Fs {
+        path: error_path,
+        source: std::io::Error::new(std::io::ErrorKind::Other, error),
+    })?
+}
+
+fn set_skill_config_enabled_blocking(
+    config_path: &Path,
+    installation: &Installation,
+    enabled: bool,
+) -> Result<()> {
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| fs_error(parent, error))?;
+    }
+
+    let content = match std::fs::read_to_string(config_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(fs_error(config_path, error)),
+    };
+    let mut document =
+        content
+            .parse::<DocumentMut>()
+            .map_err(|error| SkillsMgrError::InvalidArtifact {
+                path: config_path.to_path_buf(),
+                reason: error.to_string(),
+            })?;
+
+    ensure_skills_config_array(&mut document);
+    let path = installation.on_disk_path.to_string_lossy().to_string();
+    let name = installation
+        .on_disk_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_string();
+    let configs = document["skills"]["config"]
+        .as_array_of_tables_mut()
+        .expect("skills.config is an array of tables");
+
+    let mut found = false;
+    for table in configs.iter_mut() {
+        if table
+            .get("path")
+            .and_then(Item::as_str)
+            .is_some_and(|existing| existing == path)
+        {
+            table["enabled"] = value(enabled);
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
+        let mut table = Table::new();
+        table["name"] = value(name);
+        table["path"] = value(path);
+        table["enabled"] = value(enabled);
+        configs.push(table);
+    }
+
+    std::fs::write(config_path, document.to_string()).map_err(|error| fs_error(config_path, error))
+}
+
+fn ensure_skills_config_array(document: &mut DocumentMut) {
+    if !document.as_table().contains_key("skills") {
+        document["skills"] = Item::Table(Table::new());
+    }
+
+    if !document["skills"]
+        .as_table_like()
+        .is_some_and(|table| table.contains_key("config"))
+    {
+        document["skills"]["config"] = Item::ArrayOfTables(ArrayOfTables::new());
+    }
 }
 
 #[cfg(test)]
@@ -394,6 +541,61 @@ mod tests {
             .join("scripts")
             .join("run.sh")
             .exists());
+    }
+
+    #[tokio::test]
+    async fn uninstall_refuses_path_outside_managed_layout() {
+        let home = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let adapter = DirectoryLayout::skill(
+            "codex",
+            |scope| Target::Codex { scope },
+            home.path().join("skills"),
+            ".agents/skills",
+        );
+        let artifact = Artifact::new("demo", "", None, ArtifactKind::Skill, Source::Unknown);
+        let installation = Installation::enabled(
+            &artifact,
+            Target::Codex {
+                scope: Scope::Global,
+            },
+            outside.path().join("demo"),
+        );
+
+        let error = adapter.uninstall(&installation).await.unwrap_err();
+
+        assert!(matches!(error, SkillsMgrError::UnsafePath { .. }));
+    }
+
+    #[tokio::test]
+    async fn codex_disable_and_enable_write_skills_config_entries() {
+        let home = tempdir().unwrap();
+        let config = home.path().join(".codex/config.toml");
+        let adapter = DirectoryLayout::skill(
+            "codex",
+            |scope| Target::Codex { scope },
+            home.path().join(".agents/skills"),
+            ".agents/skills",
+        )
+        .with_config_path(&config);
+        let artifact = Artifact::new("demo", "", None, ArtifactKind::Skill, Source::Unknown);
+        let installation = Installation::enabled(
+            &artifact,
+            Target::Codex {
+                scope: Scope::Global,
+            },
+            home.path().join(".agents/skills/demo"),
+        );
+
+        adapter.disable(&installation).await.unwrap();
+        let disabled = fs::read_to_string(&config).unwrap();
+        assert!(disabled.contains("[[skills.config]]"));
+        assert!(disabled.contains("name = \"demo\""));
+        assert!(disabled.contains("enabled = false"));
+
+        adapter.enable(&installation).await.unwrap();
+        let enabled = fs::read_to_string(&config).unwrap();
+        assert!(enabled.contains("enabled = true"));
     }
 
     #[tokio::test]

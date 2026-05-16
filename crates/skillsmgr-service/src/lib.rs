@@ -3,9 +3,11 @@ use std::sync::Arc;
 
 use skillsmgr_adapters::{claude_code, codex, gemini, hermes::HermesAdapter, opencode};
 use skillsmgr_core::{
-    AdapterPresence, Artifact, ArtifactKind, ScannedInstallation, Scope, SourceProvenance,
-    ToolAdapter,
+    AdapterPresence, Artifact, ArtifactKind, Installation, Result, ScannedInstallation, Scope,
+    SkillsMgrError, Source, SourceProvenance, Target, ToolAdapter,
 };
+use skillsmgr_fetch::{preview_github_import, preview_local_import, ImportPreview};
+use skillsmgr_registry::Registry;
 use skillsmgr_scan::{default_scopes, discover_project_root, scan_all, ScanError, ScanResult};
 
 #[derive(Debug, Clone)]
@@ -33,11 +35,25 @@ pub struct Inventory {
 
 pub struct Service {
     adapters: Vec<Arc<dyn ToolAdapter>>,
+    registry: Option<tokio::sync::Mutex<Registry>>,
 }
 
 impl Service {
     pub fn with_adapters(adapters: Vec<Arc<dyn ToolAdapter>>) -> Self {
-        Self { adapters }
+        Self {
+            adapters,
+            registry: None,
+        }
+    }
+
+    pub fn with_adapters_and_registry(
+        adapters: Vec<Arc<dyn ToolAdapter>>,
+        registry: Registry,
+    ) -> Self {
+        Self {
+            adapters,
+            registry: Some(tokio::sync::Mutex::new(registry)),
+        }
     }
 
     pub fn with_home(home: impl Into<PathBuf>) -> Self {
@@ -49,7 +65,16 @@ impl Service {
             Arc::new(gemini::adapter(&home)),
             Arc::new(HermesAdapter::from_home(&home)),
         ];
-        Self { adapters }
+        Self {
+            adapters,
+            registry: None,
+        }
+    }
+
+    pub fn with_home_and_registry(home: impl Into<PathBuf>, registry: Registry) -> Self {
+        let mut service = Self::with_home(home);
+        service.registry = Some(tokio::sync::Mutex::new(registry));
+        service
     }
 
     pub async fn inventory(&self, cwd: Option<&Path>) -> Inventory {
@@ -61,6 +86,155 @@ impl Service {
     pub async fn inventory_for_scopes(&self, scopes: Vec<Scope>) -> Inventory {
         let results = scan_all(self.adapters.clone(), scopes).await;
         build_inventory(results)
+    }
+
+    pub async fn preview_local_import(
+        &self,
+        path: impl AsRef<Path>,
+        scopes: Vec<Scope>,
+    ) -> Result<ImportPreview> {
+        preview_local_import(path, &self.available_targets(scopes)).await
+    }
+
+    pub async fn preview_github_import(
+        &self,
+        url: impl Into<String>,
+        scopes: Vec<Scope>,
+    ) -> Result<ImportPreview> {
+        preview_github_import(url, &self.available_targets(scopes)).await
+    }
+
+    pub async fn install(
+        &self,
+        artifact: &Artifact,
+        target: Target,
+        scopes_to_scan: Vec<Scope>,
+    ) -> Result<Installation> {
+        let scope = target_scope(&target)?;
+        let adapter = self.adapter_for_target(&target)?;
+
+        self.ensure_no_source_conflict(artifact, scopes_to_scan)
+            .await?;
+        let installation = adapter.install(artifact, scope).await?;
+        if let Some(registry) = &self.registry {
+            registry
+                .lock()
+                .await
+                .record_installation(artifact, &installation)?;
+        }
+        Ok(installation)
+    }
+
+    pub async fn uninstall(&self, installation: &Installation) -> Result<()> {
+        let adapter = self.adapter_for_target(&installation.target)?;
+        adapter.uninstall(installation).await?;
+        if let Some(registry) = &self.registry {
+            registry.lock().await.record_uninstall(installation.id)?;
+        }
+        Ok(())
+    }
+
+    pub async fn enable(&self, installation: &Installation) -> Result<()> {
+        let adapter = self.adapter_for_target(&installation.target)?;
+        adapter.enable(installation).await
+    }
+
+    pub async fn disable(&self, installation: &Installation) -> Result<()> {
+        let adapter = self.adapter_for_target(&installation.target)?;
+        adapter.disable(installation).await
+    }
+
+    pub async fn rebuild_registry_for_scopes(&self, scopes: Vec<Scope>) -> Result<()> {
+        let Some(registry) = &self.registry else {
+            return Ok(());
+        };
+        let results = scan_all(self.adapters.clone(), scopes).await;
+        let scanned = results
+            .into_iter()
+            .flat_map(|result| result.items)
+            .collect::<Vec<_>>();
+        registry.lock().await.upsert_scan_results(&scanned)
+    }
+
+    pub fn available_targets(&self, scopes: Vec<Scope>) -> Vec<Target> {
+        let mut targets = Vec::new();
+        for adapter in &self.adapters {
+            for scope in scopes.clone() {
+                for kind in adapter.supported_kinds() {
+                    if let Some(target) = target_for_adapter(adapter.id(), scope.clone(), *kind) {
+                        push_unique_target(&mut targets, target);
+                    }
+                }
+            }
+        }
+        targets
+    }
+
+    fn adapter_for_target(&self, target: &Target) -> Result<Arc<dyn ToolAdapter>> {
+        let tool_id = target.tool_id();
+        self.adapters
+            .iter()
+            .find(|adapter| adapter.id() == tool_id)
+            .cloned()
+            .ok_or_else(|| SkillsMgrError::UnsupportedTarget {
+                adapter_id: tool_id.to_string(),
+                target: target.clone(),
+            })
+    }
+
+    async fn ensure_no_source_conflict(
+        &self,
+        artifact: &Artifact,
+        scopes: Vec<Scope>,
+    ) -> Result<()> {
+        let inventory = self.inventory_for_scopes(scopes).await;
+        for group in inventory.groups {
+            if group.name != artifact.name || group.kind != artifact.kind {
+                continue;
+            }
+
+            for item in group.installations {
+                if item.artifact.source != Source::Unknown
+                    && artifact.source != Source::Unknown
+                    && item.artifact.source != artifact.source
+                {
+                    return Err(SkillsMgrError::SourceConflict {
+                        name: artifact.name.clone(),
+                        existing_source: item.artifact.source,
+                        new_source: artifact.source.clone(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn target_scope(target: &Target) -> Result<Scope> {
+    target
+        .scope()
+        .cloned()
+        .ok_or_else(|| SkillsMgrError::UnsupportedTarget {
+            adapter_id: target.tool_id().to_string(),
+            target: target.clone(),
+        })
+}
+
+fn target_for_adapter(adapter_id: &str, scope: Scope, kind: ArtifactKind) -> Option<Target> {
+    let target = match adapter_id {
+        "claude-code" => Target::ClaudeCode { scope },
+        "codex" => Target::Codex { scope },
+        "opencode" => Target::Opencode { scope },
+        "gemini" => Target::Gemini { scope },
+        _ => return None,
+    };
+    target.supports_kind(kind).then_some(target)
+}
+
+fn push_unique_target(targets: &mut Vec<Target>, target: Target) {
+    if !targets.contains(&target) {
+        targets.push(target);
     }
 }
 
@@ -163,6 +337,7 @@ fn merge_metadata(group: &mut ArtifactGroup, artifact: &Artifact) {
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::sync::Arc;
 
     use tempfile::tempdir;
 
@@ -273,5 +448,235 @@ mod tests {
             .find(|a| a.adapter_id == "hermes")
             .unwrap();
         assert!(matches!(hermes.presence, AdapterPresence::Missing { .. }));
+    }
+
+    #[tokio::test]
+    async fn preview_import_filters_targets_from_service_adapters() {
+        let home = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        fs::write(source.path().join("SKILL.md"), "# Demo\n").unwrap();
+        let service = Service::with_adapters(vec![
+            Arc::new(claude_code::adapter(home.path())),
+            Arc::new(gemini::adapter(home.path())),
+        ]);
+
+        let preview = service
+            .preview_local_import(source.path(), vec![Scope::Global])
+            .await
+            .unwrap();
+
+        assert_eq!(preview.candidates.len(), 1);
+        assert_eq!(
+            preview.candidates[0].compatible_targets,
+            vec![Target::ClaudeCode {
+                scope: Scope::Global
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn install_routes_to_selected_adapter() {
+        let home = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        fs::write(source.path().join("SKILL.md"), "# Demo\n").unwrap();
+        let service = Service::with_adapters(vec![Arc::new(claude_code::adapter(home.path()))]);
+        let artifact = Artifact::new(
+            "demo",
+            "",
+            None,
+            ArtifactKind::Skill,
+            skillsmgr_core::Source::Local {
+                path: source.path().to_path_buf(),
+            },
+        );
+
+        let installation = service
+            .install(
+                &artifact,
+                Target::ClaudeCode {
+                    scope: Scope::Global,
+                },
+                vec![Scope::Global],
+            )
+            .await
+            .unwrap();
+
+        assert!(installation.on_disk_path.join("SKILL.md").exists());
+        assert_eq!(
+            installation.target,
+            Target::ClaudeCode {
+                scope: Scope::Global
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn install_refuses_same_name_from_different_source() {
+        let home = tempdir().unwrap();
+        write_skill(
+            &home.path().join(".claude/skills"),
+            "demo",
+            "Existing",
+            None,
+        );
+        let new_source = tempdir().unwrap();
+        fs::write(new_source.path().join("SKILL.md"), "# Demo\n").unwrap();
+        let service = Service::with_adapters(vec![Arc::new(claude_code::adapter(home.path()))]);
+        let artifact = Artifact::new(
+            "demo",
+            "",
+            None,
+            ArtifactKind::Skill,
+            skillsmgr_core::Source::Local {
+                path: new_source.path().to_path_buf(),
+            },
+        );
+
+        let error = service
+            .install(
+                &artifact,
+                Target::ClaudeCode {
+                    scope: Scope::Global,
+                },
+                vec![Scope::Global],
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, SkillsMgrError::SourceConflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn uninstall_routes_to_selected_adapter() {
+        let home = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        fs::write(source.path().join("SKILL.md"), "# Demo\n").unwrap();
+        let service = Service::with_adapters(vec![Arc::new(gemini::adapter(home.path()))]);
+        let artifact = Artifact::new(
+            "demo",
+            "",
+            None,
+            ArtifactKind::Extension,
+            skillsmgr_core::Source::Local {
+                path: source.path().to_path_buf(),
+            },
+        );
+        fs::write(
+            source.path().join("gemini-extension.json"),
+            r#"{"name":"demo"}"#,
+        )
+        .unwrap();
+        let installation = service
+            .install(
+                &artifact,
+                Target::Gemini {
+                    scope: Scope::Global,
+                },
+                vec![Scope::Global],
+            )
+            .await
+            .unwrap();
+
+        service.uninstall(&installation).await.unwrap();
+
+        assert!(!installation.on_disk_path.exists());
+    }
+
+    #[tokio::test]
+    async fn mvp_adapters_install_and_uninstall() {
+        let home = tempdir().unwrap();
+        let adapters: Vec<Arc<dyn ToolAdapter>> = vec![
+            Arc::new(claude_code::adapter(home.path())),
+            Arc::new(codex::adapter(home.path())),
+            Arc::new(opencode::adapter(home.path())),
+            Arc::new(gemini::adapter(home.path())),
+        ];
+        let cases = vec![
+            (
+                ArtifactKind::Skill,
+                Target::ClaudeCode {
+                    scope: Scope::Global,
+                },
+                "claude-demo",
+            ),
+            (
+                ArtifactKind::Skill,
+                Target::Codex {
+                    scope: Scope::Global,
+                },
+                "codex-demo",
+            ),
+            (
+                ArtifactKind::Skill,
+                Target::Opencode {
+                    scope: Scope::Global,
+                },
+                "opencode-demo",
+            ),
+            (
+                ArtifactKind::Extension,
+                Target::Gemini {
+                    scope: Scope::Global,
+                },
+                "gemini-demo",
+            ),
+        ];
+        let service = Service::with_adapters(adapters);
+
+        for (kind, target, name) in cases {
+            let source = tempdir().unwrap();
+            match kind {
+                ArtifactKind::Skill => {
+                    fs::write(source.path().join("SKILL.md"), "# Demo\n").unwrap();
+                }
+                ArtifactKind::Extension => {
+                    fs::write(
+                        source.path().join("gemini-extension.json"),
+                        format!(r#"{{"name":"{name}"}}"#),
+                    )
+                    .unwrap();
+                }
+                ArtifactKind::Workflow => unreachable!(),
+            }
+            let artifact = Artifact::new(
+                name,
+                "",
+                None,
+                kind,
+                skillsmgr_core::Source::Local {
+                    path: source.path().to_path_buf(),
+                },
+            );
+
+            let installation = service
+                .install(&artifact, target, vec![Scope::Global])
+                .await
+                .unwrap();
+            assert!(installation.on_disk_path.exists());
+
+            service.uninstall(&installation).await.unwrap();
+            assert!(!installation.on_disk_path.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_rebuilds_from_service_scan() {
+        let home = tempdir().unwrap();
+        write_skill(
+            &home.path().join(".claude/skills"),
+            "demo",
+            "Demo",
+            Some("1.0.0"),
+        );
+        let registry = skillsmgr_registry::Registry::in_memory().unwrap();
+        let service = Service::with_adapters_and_registry(
+            vec![Arc::new(claude_code::adapter(home.path()))],
+            registry,
+        );
+
+        service
+            .rebuild_registry_for_scopes(vec![Scope::Global])
+            .await
+            .unwrap();
     }
 }
