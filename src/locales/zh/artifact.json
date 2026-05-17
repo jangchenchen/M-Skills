@@ -1,0 +1,39 @@
+{
+  "kind": {
+    "Skill": "技能",
+    "Extension": "扩展",
+    "Workflow": "工作流"
+  },
+  "kindPlural": {
+    "Skill": "技能",
+    "Extension": "扩展",
+    "Workflow": "工作流"
+  },
+  "installedCount": "已安装 {{count}} 个",
+  "visibleTo": "可见于：{{tools}}",
+  "version": "v{{version}}",
+  "body": "内容",
+  "translate": "翻译",
+  "retranslate": "重新翻译",
+  "translating": "翻译中…",
+  "copy": "复制译文",
+  "copied": "已复制",
+  "clearCache": "清除缓存",
+  "cleared": "已清除",
+  "noTranslationYet": "点击「翻译」生成中文译文。",
+  "badge": {
+    "cached": "已缓存",
+    "justTranslated": "刚刚翻译",
+    "refreshed": "已重新翻译",
+    "passthrough": "未翻译（直通）"
+  },
+  "validation": {
+    "header": "Markdown 结构可能有变化",
+    "fencedCodeBlockCount": "代码块数：源文 {{source}} 个，译文 {{translated}} 个",
+    "linkCount": "链接数：源文 {{source}} 个，译文 {{translated}} 个",
+    "headingCount": "标题数：源文 {{source}} 个，译文 {{translated}} 个",
+    "listItemCount": "列表项数：源文 {{source}} 个，译文 {{translated}} 个",
+    "codeBlockContentChanged": "第 {{index}} 个代码块被修改",
+    "frontmatterChanged": "Frontmatter 被修改"
+  }
+}

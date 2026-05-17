@@ -1,0 +1,21 @@
+{
+  "unsupportedKind": "{{kind}} is not supported by target {{target}}",
+  "unsupportedTarget": "Adapter {{adapterId}} does not support target {{target}}",
+  "conflict": "Artifact \"{{name}}\" already exists at {{path}}",
+  "sourceConflict": "Artifact \"{{name}}\" source conflict: {{existingSource}} vs {{newSource}}",
+  "invalidArtifact": "Invalid artifact at {{path}}: {{reason}}",
+  "unsupportedImportSource": "Import source {{input}} is not supported",
+  "noSupportedArtifacts": "No supported artifacts found at {{path}}",
+  "unsafePath": "Unsafe path {{path}}: {{reason}}",
+  "fs": "Filesystem error at {{path}}: {{message}}",
+  "git": "Git error while importing {{input}}: {{message}}",
+  "registry": "Registry error: {{message}}",
+  "readOnly": "{{tool}} does not support {{operation}} in this version",
+  "noPendingImport": "No pending import — start a new import first",
+  "invalidCandidateIndex": "Invalid artifact selection",
+  "internal": "Unexpected error: {{message}}",
+  "unknown": "Unknown error",
+  "translateProvider": "Translation provider error ({{kind}}, status {{status}}): {{message}}",
+  "translateConfig": "Translation config error: {{reason}}",
+  "keyring": "Keychain error: {{message}}"
+}

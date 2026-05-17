@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { install, previewImport } from "../api";
+import { useErrorMessage } from "../useErrorMessage";
 import type { ImportCandidateDto, ImportPreviewDto, TargetDto } from "../types";
 import { targetLabel } from "../types";
 
@@ -18,6 +20,9 @@ export function ImportWizard({ onClose }: Props) {
     useState<ImportCandidateDto | null>(null);
   const [selectedTarget, setSelectedTarget] = useState<TargetDto | null>(null);
   const qc = useQueryClient();
+  const { t } = useTranslation("wizard");
+  const { t: tc } = useTranslation("common");
+  const errorMessage = useErrorMessage();
 
   const previewMut = useMutation({
     mutationFn: () => previewImport(pathOrUrl),
@@ -49,7 +54,7 @@ export function ImportWizard({ onClose }: Props) {
       <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-xl shadow-xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700">
           <h2 className="text-base font-semibold text-gray-100">
-            Import artifact
+            {t("title")}
           </h2>
           <button
             onClick={onClose}
@@ -66,7 +71,7 @@ export function ImportWizard({ onClose }: Props) {
               onChange={setPathOrUrl}
               onSubmit={() => previewMut.mutate()}
               loading={previewMut.isPending}
-              error={previewMut.error?.message}
+              error={previewMut.error ? errorMessage(previewMut.error) : undefined}
             />
           )}
 
@@ -83,20 +88,20 @@ export function ImportWizard({ onClose }: Props) {
               onInstall={() => installMut.mutate()}
               onBack={() => setStep("input")}
               loading={installMut.isPending}
-              error={installMut.error?.message}
+              error={installMut.error ? errorMessage(installMut.error) : undefined}
             />
           )}
 
           {step === "done" && (
             <div className="py-6 text-center">
               <p className="text-emerald-400 text-sm font-medium">
-                Installed successfully.
+                {t("successMessage")}
               </p>
               <button
                 onClick={onClose}
                 className="mt-4 text-sm text-gray-400 hover:text-gray-200"
               >
-                Close
+                {tc("close")}
               </button>
             </div>
           )}
@@ -119,15 +124,14 @@ function InputStep({
   loading: boolean;
   error?: string;
 }) {
+  const { t } = useTranslation("wizard");
   return (
     <div className="space-y-4">
-      <p className="text-sm text-gray-400">
-        Enter a local directory path or GitHub URL.
-      </p>
+      <p className="text-sm text-gray-400">{t("enterPath")}</p>
       <input
         type="text"
         className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-        placeholder="/path/to/skill  or  https://github.com/org/repo"
+        placeholder={t("placeholder")}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && !loading && onSubmit()}
@@ -139,7 +143,7 @@ function InputStep({
           disabled={loading || !value.trim()}
           className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded"
         >
-          {loading ? "Loading…" : "Preview"}
+          {loading ? t("loading") : t("preview")}
         </button>
       </div>
     </div>
@@ -167,15 +171,18 @@ function PreviewStep({
   loading: boolean;
   error?: string;
 }) {
+  const { t } = useTranslation("wizard");
+  const { t: tc } = useTranslation("common");
+  const { t: ta } = useTranslation("artifact");
   const { audit } = preview;
 
   if (preview.candidates.length === 0) {
     return (
       <div className="py-6 text-center text-sm text-gray-400">
-        No supported artifact found in this source.
+        {t("noArtifact")}
         <div className="mt-4">
           <button onClick={onBack} className="text-xs text-gray-500 hover:text-gray-300">
-            ← Back
+            {tc("back")}
           </button>
         </div>
       </div>
@@ -186,13 +193,13 @@ function PreviewStep({
     <div className="space-y-4">
       {preview.commitSha && (
         <p className="text-xs text-gray-500">
-          commit: <span className="font-mono">{preview.commitSha.slice(0, 12)}</span>
+          {t("commit", { sha: preview.commitSha.slice(0, 12) })}
         </p>
       )}
 
       {audit.warnings.length > 0 && (
         <div className="rounded bg-yellow-900/30 border border-yellow-700/50 px-3 py-2">
-          <p className="text-xs font-semibold text-yellow-400 mb-1">Warnings</p>
+          <p className="text-xs font-semibold text-yellow-400 mb-1">{t("warnings")}</p>
           <ul className="space-y-1">
             {audit.warnings.map((w, i) => (
               <li key={i} className="text-xs text-yellow-300">
@@ -204,7 +211,7 @@ function PreviewStep({
       )}
 
       <div>
-        <label className="text-xs text-gray-400 block mb-1">Artifact</label>
+        <label className="text-xs text-gray-400 block mb-1">{t("artifact")}</label>
         <select
           className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-100"
           value={selectedCandidate?.index ?? 0}
@@ -215,7 +222,7 @@ function PreviewStep({
         >
           {preview.candidates.map((c) => (
             <option key={c.index} value={c.index}>
-              {c.artifact.name} ({c.artifact.kind})
+              {c.artifact.name} ({ta(`kind.${c.artifact.kind}`)})
             </option>
           ))}
         </select>
@@ -224,10 +231,10 @@ function PreviewStep({
       {selectedCandidate && (
         <div>
           <label className="text-xs text-gray-400 block mb-1">
-            Install target
+            {t("installTarget")}
           </label>
           {selectedCandidate.compatibleTargets.length === 0 ? (
-            <p className="text-xs text-red-400">No compatible targets available.</p>
+            <p className="text-xs text-red-400">{t("noTargets")}</p>
           ) : (
             <select
               className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-100"
@@ -258,7 +265,7 @@ function PreviewStep({
 
       <details className="text-xs">
         <summary className="text-gray-500 cursor-pointer hover:text-gray-400">
-          {audit.files.length} files
+          {t("files", { count: audit.files.length })}
         </summary>
         <ul className="mt-1 max-h-32 overflow-y-auto space-y-0.5 pl-3">
           {audit.files.map((f, i) => (
@@ -276,14 +283,14 @@ function PreviewStep({
           onClick={onBack}
           className="text-xs text-gray-500 hover:text-gray-300"
         >
-          ← Back
+          {tc("back")}
         </button>
         <button
           onClick={onInstall}
           disabled={loading || !selectedCandidate || !selectedTarget}
           className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded"
         >
-          {loading ? "Installing…" : "Install"}
+          {loading ? t("installing") : t("install")}
         </button>
       </div>
     </div>

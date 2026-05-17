@@ -6,7 +6,9 @@ use skillsmgr_core::{
     AdapterPresence, Artifact, ArtifactKind, Installation, Result, ScannedInstallation, Scope,
     SkillsMgrError, Source, SourceProvenance, Target, ToolAdapter,
 };
-use skillsmgr_fetch::{preview_github_import, preview_local_import, ImportCandidate, ImportPreview};
+use skillsmgr_fetch::{
+    preview_github_import, preview_local_import, ImportCandidate, ImportPreview,
+};
 use skillsmgr_registry::Registry;
 use skillsmgr_scan::{default_scopes, discover_project_root, scan_all, ScanError, ScanResult};
 
@@ -21,6 +23,7 @@ pub struct ArtifactGroup {
     pub name: String,
     pub kind: ArtifactKind,
     pub description: String,
+    pub body: Option<String>,
     pub version: Option<String>,
     pub installations: Vec<ScannedInstallation>,
     pub also_visible_to: Vec<String>,
@@ -142,7 +145,8 @@ impl Service {
             path: candidate.staged_root.clone(),
         };
 
-        self.ensure_no_source_conflict(&copy_artifact, scopes).await?;
+        self.ensure_no_source_conflict(&copy_artifact, scopes)
+            .await?;
         let installation = adapter.install(&copy_artifact, scope).await?;
 
         if let Some(registry) = &self.registry {
@@ -310,6 +314,7 @@ fn insert_into_group(groups: &mut Vec<ArtifactGroup>, item: ScannedInstallation)
         name: item.artifact.name.clone(),
         kind: item.artifact.kind,
         description: item.artifact.description.clone(),
+        body: item.artifact.body.clone(),
         version: item.artifact.version.clone(),
         installations: vec![item],
         also_visible_to,
@@ -356,6 +361,9 @@ fn push_unique(values: &mut Vec<String>, value: String) {
 fn merge_metadata(group: &mut ArtifactGroup, artifact: &Artifact) {
     if group.description.is_empty() && !artifact.description.is_empty() {
         group.description = artifact.description.clone();
+    }
+    if group.body.is_none() && artifact.body.is_some() {
+        group.body.clone_from(&artifact.body);
     }
     if group.version.is_none() && artifact.version.is_some() {
         group.version.clone_from(&artifact.version);
@@ -418,6 +426,7 @@ mod tests {
         assert_eq!(polish.installations.len(), 2);
         assert_eq!(polish.also_visible_to, vec!["opencode"]);
         assert_eq!(polish.description, "Polish code");
+        assert_eq!(polish.body.as_deref(), Some("# polish-code"));
         assert_eq!(polish.version.as_deref(), Some("1.0.0"));
 
         let review = inventory

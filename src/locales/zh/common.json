@@ -1,0 +1,19 @@
+{
+  "scanning": "扫描中…",
+  "noArtifacts": "未找到任何制品。",
+  "importFirst": "导入第一个制品",
+  "allArtifacts": "全部制品",
+  "tools": "工具",
+  "import": "+ 导入",
+  "selectPrompt": "选择制品查看详情。",
+  "source": "来源",
+  "installed": "已安装",
+  "alsoVisibleTo": "也可见于",
+  "notInstalled": "未安装到任何目标。",
+  "enable": "启用",
+  "disable": "禁用",
+  "uninstall": "卸载",
+  "unknown": "未知",
+  "close": "关闭",
+  "back": "← 返回"
+}

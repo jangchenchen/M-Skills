@@ -4,6 +4,8 @@ import type {
   InstallationDto,
   InventoryDto,
   TargetDto,
+  TranslateConfigDto,
+  TranslateOutcomeDto,
 } from "./types";
 
 export function scan(cwd?: string): Promise<InventoryDto> {
@@ -31,4 +33,42 @@ export function enable(installation: InstallationDto): Promise<void> {
 
 export function disable(installation: InstallationDto): Promise<void> {
   return invoke("disable", { installation });
+}
+
+export function translateArtifact(input: {
+  artifactName: string;
+  filePath: string;
+  field: string;
+  sourceText: string;
+  locale: string;
+  forceRefresh?: boolean;
+}): Promise<TranslateOutcomeDto> {
+  return invoke("translate_artifact", input);
+}
+
+export function clearTranslationCache(input: {
+  artifactName: string;
+  filePath: string;
+  field: string;
+  locale: string;
+}): Promise<number> {
+  return invoke("clear_translation_cache", input);
+}
+
+export function getTranslateConfig(): Promise<TranslateConfigDto> {
+  return invoke("get_translate_config");
+}
+
+export function setTranslateConfig(
+  config: TranslateConfigDto,
+  apiKey: string | null
+): Promise<TranslateConfigDto> {
+  return invoke("set_translate_config", { config, apiKey });
+}
+
+export function testTranslateProvider(
+  config: TranslateConfigDto,
+  apiKey: string | null
+): Promise<string> {
+  return invoke("test_translate_provider", { config, apiKey });
 }

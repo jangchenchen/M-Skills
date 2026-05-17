@@ -1,0 +1,19 @@
+{
+  "scanning": "Scanning…",
+  "noArtifacts": "No artifacts found.",
+  "importFirst": "Import your first artifact",
+  "allArtifacts": "All artifacts",
+  "tools": "Tools",
+  "import": "+ Import",
+  "selectPrompt": "Select an artifact to see details.",
+  "source": "Source",
+  "installed": "Installed",
+  "alsoVisibleTo": "Also visible to",
+  "notInstalled": "Not installed on any target.",
+  "enable": "Enable",
+  "disable": "Disable",
+  "uninstall": "Uninstall",
+  "unknown": "Unknown",
+  "close": "Close",
+  "back": "← Back"
+}

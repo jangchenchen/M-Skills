@@ -1,0 +1,25 @@
+[package]
+name = "skillsmgr-translate"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml = "0.8"
+tokio = { workspace = true, features = ["time"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+keyring = { version = "3", features = ["apple-native"] }
+skillsmgr-core = { path = "../skillsmgr-core" }
+skillsmgr-registry = { path = "../skillsmgr-registry" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tempfile.workspace = true
+wiremock = "0.6"

@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { ArtifactGroupDto, ArtifactKind } from "../types";
 
 interface Props {
@@ -19,6 +20,9 @@ export function ArtifactList({
   selectedName,
   onSelect,
 }: Props) {
+  const { t } = useTranslation("artifact");
+  const { t: tc } = useTranslation("common");
+
   const visible = selectedKind
     ? groups.filter((g) => g.kind === selectedKind)
     : groups;
@@ -26,7 +30,7 @@ export function ArtifactList({
   if (visible.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-        No artifacts found.
+        {tc("noArtifacts")}
       </div>
     );
   }
@@ -51,7 +55,7 @@ export function ArtifactList({
                 <span
                   className={`text-xs px-1.5 py-0.5 rounded font-medium ${KIND_BADGE[g.kind]}`}
                 >
-                  {g.kind}
+                  {t(`kind.${g.kind}`)}
                 </span>
                 <span className="text-sm font-medium text-gray-100 truncate">
                   {g.name}
@@ -65,12 +69,12 @@ export function ArtifactList({
               <div className="mt-1 flex gap-2 text-xs text-gray-600">
                 {installed > 0 && (
                   <span className="text-emerald-600">
-                    {installed} installed
+                    {t("installedCount", { count: installed })}
                   </span>
                 )}
                 {g.alsoVisibleTo.length > 0 && (
                   <span>
-                    visible to: {g.alsoVisibleTo.join(", ")}
+                    {t("visibleTo", { tools: g.alsoVisibleTo.join(", ") })}
                   </span>
                 )}
               </div>

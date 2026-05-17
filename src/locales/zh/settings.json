@@ -1,0 +1,23 @@
+{
+  "title": "设置",
+  "translationSection": "翻译",
+  "provider": "服务商",
+  "providerPassthrough": "直通（不翻译）",
+  "providerOpenAiCompat": "OpenAI 兼容 HTTP",
+  "baseUrl": "Base URL",
+  "baseUrlHint": "例如 https://api.deepseek.com/v1 或 https://yunwu.ai/v1",
+  "model": "模型",
+  "apiKey": "API Key",
+  "apiKeyPlaceholderSet": "•••••••• （已保存在钥匙串，留空表示保留）",
+  "apiKeyPlaceholderEmpty": "粘贴 API Key",
+  "apiKeyClear": "清除已保存的 Key",
+  "timeoutMs": "超时（毫秒）",
+  "maxRetries": "5xx / 网络错误重试次数",
+  "test": "测试",
+  "testing": "测试中…",
+  "testSuccess": "测试成功：{{result}}",
+  "save": "保存",
+  "saving": "保存中…",
+  "cancel": "取消",
+  "open": "打开设置"
+}

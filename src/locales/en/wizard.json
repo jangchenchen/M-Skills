@@ -1,0 +1,17 @@
+{
+  "title": "Import artifact",
+  "enterPath": "Enter a local directory path or GitHub URL.",
+  "placeholder": "/path/to/skill  or  https://github.com/org/repo",
+  "preview": "Preview",
+  "loading": "Loading…",
+  "installing": "Installing…",
+  "install": "Install",
+  "successMessage": "Installed successfully.",
+  "noArtifact": "No supported artifact found in this source.",
+  "commit": "commit: {{sha}}",
+  "warnings": "Warnings",
+  "artifact": "Artifact",
+  "installTarget": "Install target",
+  "noTargets": "No compatible targets available.",
+  "files": "{{count}} files"
+}

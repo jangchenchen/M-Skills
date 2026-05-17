@@ -34,6 +34,28 @@ pub struct RegistryInstallation {
     pub installed_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryTranslation {
+    pub id: String,
+    pub artifact_name: String,
+    pub file_path: PathBuf,
+    pub field: String,
+    pub source_sha256: String,
+    pub locale: String,
+    pub translated_text: String,
+    pub translated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranslationInput {
+    pub artifact_name: String,
+    pub file_path: PathBuf,
+    pub field: String,
+    pub source_sha256: String,
+    pub locale: String,
+    pub translated_text: String,
+}
+
 impl Registry {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -120,6 +142,120 @@ impl Registry {
         Ok(installations)
     }
 
+    pub fn translation(
+        &self,
+        artifact_name: &str,
+        file_path: &Path,
+        field: &str,
+        source_sha256: &str,
+        locale: &str,
+    ) -> Result<Option<RegistryTranslation>> {
+        self.connection
+            .query_row(
+                "SELECT id, artifact_name, file_path, field, source_sha256, locale, translated_text, translated_at
+                 FROM translations
+                 WHERE artifact_name = ?1
+                   AND file_path = ?2
+                   AND field = ?3
+                   AND source_sha256 = ?4
+                   AND locale = ?5",
+                params![
+                    artifact_name,
+                    file_path.to_string_lossy(),
+                    field,
+                    source_sha256,
+                    locale,
+                ],
+                read_registry_translation,
+            )
+            .optional()
+            .map_err(registry_error)
+    }
+
+    pub fn clear_translations(
+        &self,
+        artifact_name: &str,
+        file_path: &Path,
+        field: &str,
+        locale: &str,
+    ) -> Result<usize> {
+        let deleted = self
+            .connection
+            .execute(
+                "DELETE FROM translations
+                 WHERE artifact_name = ?1
+                   AND file_path = ?2
+                   AND field = ?3
+                   AND locale = ?4",
+                params![artifact_name, file_path.to_string_lossy(), field, locale,],
+            )
+            .map_err(registry_error)?;
+        Ok(deleted)
+    }
+
+    pub fn upsert_translation(&self, input: &TranslationInput) -> Result<RegistryTranslation> {
+        let translated_at = Utc::now();
+        let id = translation_id(
+            &input.artifact_name,
+            &input.file_path,
+            &input.field,
+            &input.source_sha256,
+            &input.locale,
+        );
+
+        let tx = self
+            .connection
+            .unchecked_transaction()
+            .map_err(registry_error)?;
+        tx.execute(
+            "INSERT INTO translations (
+                    id, artifact_name, file_path, field, source_sha256, locale, translated_text, translated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(artifact_name, file_path, field, source_sha256, locale) DO UPDATE SET
+                    translated_text = excluded.translated_text,
+                    translated_at = excluded.translated_at",
+            params![
+                id,
+                input.artifact_name,
+                input.file_path.to_string_lossy(),
+                input.field,
+                input.source_sha256,
+                input.locale,
+                input.translated_text,
+                translated_at.to_rfc3339(),
+            ],
+        )
+        .map_err(registry_error)?;
+        tx.execute(
+            "DELETE FROM translations
+             WHERE artifact_name = ?1
+               AND file_path = ?2
+               AND field = ?3
+               AND locale = ?4
+               AND source_sha256 <> ?5",
+            params![
+                input.artifact_name,
+                input.file_path.to_string_lossy(),
+                input.field,
+                input.locale,
+                input.source_sha256,
+            ],
+        )
+        .map_err(registry_error)?;
+        tx.commit().map_err(registry_error)?;
+
+        Ok(RegistryTranslation {
+            id,
+            artifact_name: input.artifact_name.clone(),
+            file_path: input.file_path.clone(),
+            field: input.field.clone(),
+            source_sha256: input.source_sha256.clone(),
+            locale: input.locale.clone(),
+            translated_text: input.translated_text.clone(),
+            translated_at,
+        })
+    }
+
     fn migrate(&self) -> Result<()> {
         self.connection
             .execute_batch(
@@ -155,6 +291,20 @@ impl Registry {
                     source_json TEXT NOT NULL,
                     FOREIGN KEY (artifact_id) REFERENCES artifacts(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS translations (
+                    id TEXT PRIMARY KEY,
+                    artifact_name TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    field TEXT NOT NULL,
+                    source_sha256 TEXT NOT NULL,
+                    locale TEXT NOT NULL,
+                    translated_text TEXT NOT NULL,
+                    translated_at TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS translations_lookup
+                    ON translations (artifact_name, file_path, field, source_sha256, locale);
                 ",
             )
             .map_err(registry_error)
@@ -299,6 +449,30 @@ fn read_registry_installation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Regis
     })
 }
 
+fn read_registry_translation(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryTranslation> {
+    let translated_at: String = row.get(7)?;
+    let translated_at = DateTime::parse_from_rfc3339(&translated_at)
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                7,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?
+        .with_timezone(&Utc);
+
+    Ok(RegistryTranslation {
+        id: row.get(0)?,
+        artifact_name: row.get(1)?,
+        file_path: PathBuf::from(row.get::<_, String>(2)?),
+        field: row.get(3)?,
+        source_sha256: row.get(4)?,
+        locale: row.get(5)?,
+        translated_text: row.get(6)?,
+        translated_at,
+    })
+}
+
 fn parse_uuid_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Uuid> {
     let value: String = row.get(index)?;
     Uuid::parse_str(&value).map_err(|error| {
@@ -308,6 +482,19 @@ fn parse_uuid_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Uui
             Box::new(error),
         )
     })
+}
+
+fn translation_id(
+    artifact_name: &str,
+    file_path: &Path,
+    field: &str,
+    source_sha256: &str,
+    locale: &str,
+) -> String {
+    format!(
+        "{artifact_name}:{}:{field}:{source_sha256}:{locale}",
+        file_path.to_string_lossy()
+    )
 }
 
 fn status_label(status: &Status) -> String {
@@ -433,5 +620,188 @@ mod tests {
         registry.record_uninstall(installation.id).unwrap();
 
         assert_eq!(registry.installations().unwrap()[0].status, "removed");
+    }
+
+    #[test]
+    fn upserts_and_reads_translations() {
+        let registry = Registry::in_memory().unwrap();
+        let input = TranslationInput {
+            artifact_name: "polish-code".to_string(),
+            file_path: PathBuf::from("SKILL.md"),
+            field: "body".to_string(),
+            source_sha256: "abc123".to_string(),
+            locale: "zh".to_string(),
+            translated_text: "中文".to_string(),
+        };
+
+        let stored = registry.upsert_translation(&input).unwrap();
+        let fetched = registry
+            .translation("polish-code", Path::new("SKILL.md"), "body", "abc123", "zh")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(stored.id, fetched.id);
+        assert_eq!(fetched.translated_text, "中文");
+        assert_eq!(fetched.locale, "zh");
+    }
+
+    #[test]
+    fn clear_translations_removes_only_matching_combination() {
+        let registry = Registry::in_memory().unwrap();
+
+        let base = TranslationInput {
+            artifact_name: "skill-a".to_string(),
+            file_path: PathBuf::from("SKILL.md"),
+            field: "body".to_string(),
+            source_sha256: "sha1".to_string(),
+            locale: "zh".to_string(),
+            translated_text: "zh-body".to_string(),
+        };
+        registry.upsert_translation(&base).unwrap();
+        registry
+            .upsert_translation(&TranslationInput {
+                artifact_name: "skill-b".to_string(),
+                source_sha256: "sha-b".to_string(),
+                translated_text: "other skill".to_string(),
+                ..base.clone()
+            })
+            .unwrap();
+        registry
+            .upsert_translation(&TranslationInput {
+                file_path: PathBuf::from("OTHER.md"),
+                source_sha256: "sha-other-file".to_string(),
+                translated_text: "other file".to_string(),
+                ..base.clone()
+            })
+            .unwrap();
+        registry
+            .upsert_translation(&TranslationInput {
+                field: "title".to_string(),
+                source_sha256: "sha-title".to_string(),
+                translated_text: "other field".to_string(),
+                ..base.clone()
+            })
+            .unwrap();
+        registry
+            .upsert_translation(&TranslationInput {
+                locale: "ja".to_string(),
+                source_sha256: "sha-ja".to_string(),
+                translated_text: "ja-body".to_string(),
+                ..base.clone()
+            })
+            .unwrap();
+
+        let deleted = registry
+            .clear_translations("skill-a", Path::new("SKILL.md"), "body", "zh")
+            .unwrap();
+        assert_eq!(deleted, 1);
+
+        assert!(registry
+            .translation("skill-a", Path::new("SKILL.md"), "body", "sha1", "zh")
+            .unwrap()
+            .is_none());
+        assert!(registry
+            .translation("skill-b", Path::new("SKILL.md"), "body", "sha-b", "zh")
+            .unwrap()
+            .is_some());
+        assert!(registry
+            .translation(
+                "skill-a",
+                Path::new("OTHER.md"),
+                "body",
+                "sha-other-file",
+                "zh"
+            )
+            .unwrap()
+            .is_some());
+        assert!(registry
+            .translation("skill-a", Path::new("SKILL.md"), "title", "sha-title", "zh")
+            .unwrap()
+            .is_some());
+        assert!(registry
+            .translation("skill-a", Path::new("SKILL.md"), "body", "sha-ja", "ja")
+            .unwrap()
+            .is_some());
+
+        // Clearing again is a no-op (0 deleted).
+        let deleted_again = registry
+            .clear_translations("skill-a", Path::new("SKILL.md"), "body", "zh")
+            .unwrap();
+        assert_eq!(deleted_again, 0);
+    }
+
+    #[test]
+    fn upsert_purges_stale_translations_for_same_skill_locale() {
+        let registry = Registry::in_memory().unwrap();
+
+        let v1 = TranslationInput {
+            artifact_name: "polish-code".to_string(),
+            file_path: PathBuf::from("SKILL.md"),
+            field: "body".to_string(),
+            source_sha256: "sha-v1".to_string(),
+            locale: "zh".to_string(),
+            translated_text: "旧译文".to_string(),
+        };
+        let other_locale = TranslationInput {
+            locale: "ja".to_string(),
+            translated_text: "古い翻訳".to_string(),
+            source_sha256: "sha-v1-ja".to_string(),
+            ..v1.clone()
+        };
+        let other_skill = TranslationInput {
+            artifact_name: "different-skill".to_string(),
+            translated_text: "别的 skill".to_string(),
+            source_sha256: "sha-other".to_string(),
+            ..v1.clone()
+        };
+        registry.upsert_translation(&v1).unwrap();
+        registry.upsert_translation(&other_locale).unwrap();
+        registry.upsert_translation(&other_skill).unwrap();
+
+        let v2 = TranslationInput {
+            source_sha256: "sha-v2".to_string(),
+            translated_text: "新译文".to_string(),
+            ..v1.clone()
+        };
+        registry.upsert_translation(&v2).unwrap();
+
+        // Stale sha for same skill+locale is gone.
+        assert!(registry
+            .translation("polish-code", Path::new("SKILL.md"), "body", "sha-v1", "zh")
+            .unwrap()
+            .is_none());
+
+        // New sha is present.
+        let now = registry
+            .translation("polish-code", Path::new("SKILL.md"), "body", "sha-v2", "zh")
+            .unwrap()
+            .unwrap();
+        assert_eq!(now.translated_text, "新译文");
+
+        // Different-locale entry survives.
+        let ja = registry
+            .translation(
+                "polish-code",
+                Path::new("SKILL.md"),
+                "body",
+                "sha-v1-ja",
+                "ja",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(ja.translated_text, "古い翻訳");
+
+        // Different-skill entry survives.
+        let other = registry
+            .translation(
+                "different-skill",
+                Path::new("SKILL.md"),
+                "body",
+                "sha-other",
+                "zh",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(other.translated_text, "别的 skill");
     }
 }

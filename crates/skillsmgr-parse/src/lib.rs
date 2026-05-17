@@ -17,6 +17,12 @@ struct SkillFrontmatter {
     version: Option<String>,
 }
 
+#[derive(Debug)]
+struct ParsedSkillMarkdown {
+    frontmatter: SkillFrontmatter,
+    body: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct GeminiExtensionManifest {
     name: Option<String>,
@@ -73,22 +79,23 @@ pub async fn parse_skill_dir(root: impl AsRef<Path>) -> Result<ArtifactCandidate
     let content = fs::read_to_string(&skill_path)
         .await
         .map_err(|source| fs_error(&skill_path, source))?;
-    let frontmatter = parse_markdown_frontmatter(&content, &skill_path)?;
+    let parsed = parse_skill_markdown(&content, &skill_path)?;
     let fallback_name = root
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("skill")
         .to_string();
-    let name = frontmatter.name.unwrap_or(fallback_name);
+    let name = parsed.frontmatter.name.unwrap_or(fallback_name);
     let artifact = Artifact::new(
         name,
-        frontmatter.description.unwrap_or_default(),
-        frontmatter.version,
+        parsed.frontmatter.description.unwrap_or_default(),
+        parsed.frontmatter.version,
         ArtifactKind::Skill,
         Source::Local {
             path: root.to_path_buf(),
         },
-    );
+    )
+    .with_body(parsed.body);
 
     Ok(ArtifactCandidate {
         artifact,
@@ -154,23 +161,35 @@ pub async fn parse_warp_workflow_file(path: impl AsRef<Path>) -> Result<Artifact
     })
 }
 
-fn parse_markdown_frontmatter(content: &str, path: &Path) -> Result<SkillFrontmatter> {
+fn parse_skill_markdown(content: &str, path: &Path) -> Result<ParsedSkillMarkdown> {
     let Some(rest) = content.strip_prefix("---\n") else {
-        return Ok(SkillFrontmatter {
-            name: None,
-            description: None,
-            version: None,
+        return Ok(ParsedSkillMarkdown {
+            frontmatter: SkillFrontmatter {
+                name: None,
+                description: None,
+                version: None,
+            },
+            body: non_empty_body(content),
         });
     };
 
-    let Some((yaml, _body)) = rest.split_once("\n---") else {
+    let Some((yaml, body)) = rest.split_once("\n---") else {
         return Err(SkillsMgrError::InvalidArtifact {
             path: path.to_path_buf(),
             reason: "frontmatter starts with --- but has no closing ---".to_string(),
         });
     };
 
-    serde_yaml::from_str(yaml).map_err(|error| invalid(path, error))
+    let frontmatter = serde_yaml::from_str(yaml).map_err(|error| invalid(path, error))?;
+    Ok(ParsedSkillMarkdown {
+        frontmatter,
+        body: non_empty_body(body.strip_prefix('\n').unwrap_or(body)),
+    })
+}
+
+fn non_empty_body(body: &str) -> Option<String> {
+    let trimmed = body.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 async fn looks_like_warp_workflow(path: &Path) -> Result<bool> {
@@ -230,6 +249,20 @@ mod tests {
         assert_eq!(candidates[0].artifact.name, "polish-code");
         assert_eq!(candidates[0].artifact.description, "Improves code style");
         assert_eq!(candidates[0].artifact.version.as_deref(), Some("0.1.0"));
+        assert_eq!(candidates[0].artifact.body.as_deref(), Some("# Body"));
+    }
+
+    #[tokio::test]
+    async fn keeps_full_skill_body_without_frontmatter() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("SKILL.md"), "# Body\n\nUse carefully.\n").unwrap();
+
+        let candidates = sniff_artifacts(dir.path()).await.unwrap();
+
+        assert_eq!(
+            candidates[0].artifact.body.as_deref(),
+            Some("# Body\n\nUse carefully.")
+        );
     }
 
     #[tokio::test]

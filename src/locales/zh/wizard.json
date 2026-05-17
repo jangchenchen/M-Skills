@@ -1,0 +1,17 @@
+{
+  "title": "导入制品",
+  "enterPath": "输入本地目录路径或 GitHub URL。",
+  "placeholder": "/path/to/skill  或  https://github.com/org/repo",
+  "preview": "预览",
+  "loading": "加载中…",
+  "installing": "安装中…",
+  "install": "安装",
+  "successMessage": "安装成功。",
+  "noArtifact": "此来源中未找到支持的制品。",
+  "commit": "提交：{{sha}}",
+  "warnings": "警告",
+  "artifact": "制品",
+  "installTarget": "安装目标",
+  "noTargets": "没有兼容的安装目标。",
+  "files": "{{count}} 个文件"
+}

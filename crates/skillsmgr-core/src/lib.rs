@@ -55,6 +55,19 @@ pub enum SkillsMgrError {
         tool: &'static str,
         operation: &'static str,
     },
+
+    #[error("translation provider error ({kind}): {message}")]
+    TranslateProvider {
+        kind: String,
+        status: Option<u16>,
+        message: String,
+    },
+
+    #[error("translation config error: {reason}")]
+    TranslateConfig { reason: String },
+
+    #[error("keychain error: {message}")]
+    Keyring { message: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -135,6 +148,7 @@ pub struct Artifact {
     pub id: Uuid,
     pub name: String,
     pub description: String,
+    pub body: Option<String>,
     pub version: Option<String>,
     pub kind: ArtifactKind,
     pub source: Source,
@@ -152,10 +166,16 @@ impl Artifact {
             id: Uuid::new_v4(),
             name: name.into(),
             description: description.into(),
+            body: None,
             version,
             kind,
             source,
         }
+    }
+
+    pub fn with_body(mut self, body: Option<String>) -> Self {
+        self.body = body;
+        self
     }
 }
 

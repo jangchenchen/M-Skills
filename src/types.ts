@@ -1,5 +1,10 @@
 export type ArtifactKind = "Skill" | "Extension" | "Workflow";
 
+export interface ErrorDto {
+  code: string;
+  params: Record<string, string>;
+}
+
 export type ScopeDto =
   | { type: "Global" }
   | { type: "Project"; path: string };
@@ -19,6 +24,7 @@ export interface ArtifactDto {
   id: string;
   name: string;
   description: string;
+  body: string | null;
   version: string | null;
   kind: ArtifactKind;
   source: SourceDto;
@@ -44,6 +50,7 @@ export interface ArtifactGroupDto {
   name: string;
   kind: ArtifactKind;
   description: string;
+  body: string | null;
   version: string | null;
   installations: ScannedInstallationDto[];
   alsoVisibleTo: string[];
@@ -101,6 +108,42 @@ export interface ImportPreviewDto {
   commitSha: string | null;
   candidates: ImportCandidateDto[];
   audit: ImportAuditDto;
+}
+
+export type TranslateProviderKind = "passthrough" | "openai-compat";
+
+export type TranslateCacheStatus = "hit" | "miss" | "refreshed";
+
+export type MarkdownWarningDto =
+  | { kind: "fencedCodeBlockCount"; source: number; translated: number }
+  | { kind: "linkCount"; source: number; translated: number }
+  | { kind: "headingCount"; source: number; translated: number }
+  | { kind: "listItemCount"; source: number; translated: number }
+  | { kind: "codeBlockContentChanged"; index: number }
+  | { kind: "frontmatterChanged" };
+
+export interface TranslationValidationDto {
+  ok: boolean;
+  warnings: MarkdownWarningDto[];
+}
+
+export interface TranslateOutcomeDto {
+  text: string;
+  locale: string;
+  field: string;
+  sourceSha256: string;
+  cacheStatus: TranslateCacheStatus;
+  providerKind: TranslateProviderKind | string;
+  validation: TranslationValidationDto;
+}
+
+export interface TranslateConfigDto {
+  providerKind: TranslateProviderKind;
+  baseUrl: string;
+  model: string;
+  timeoutMs: number;
+  maxRetries: number;
+  apiKeyPresent: boolean;
 }
 
 export function targetLabel(t: TargetDto): string {

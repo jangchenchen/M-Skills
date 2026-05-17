@@ -1,0 +1,39 @@
+{
+  "kind": {
+    "Skill": "Skill",
+    "Extension": "Extension",
+    "Workflow": "Workflow"
+  },
+  "kindPlural": {
+    "Skill": "Skills",
+    "Extension": "Extensions",
+    "Workflow": "Workflows"
+  },
+  "installedCount": "{{count}} installed",
+  "visibleTo": "visible to: {{tools}}",
+  "version": "v{{version}}",
+  "body": "Content",
+  "translate": "Translate",
+  "retranslate": "Retranslate",
+  "translating": "Translating…",
+  "copy": "Copy translation",
+  "copied": "Copied",
+  "clearCache": "Clear cache",
+  "cleared": "Cleared",
+  "noTranslationYet": "Click Translate to render a Chinese version.",
+  "badge": {
+    "cached": "Cached",
+    "justTranslated": "Just translated",
+    "refreshed": "Refreshed",
+    "passthrough": "Not translated (passthrough)"
+  },
+  "validation": {
+    "header": "Markdown structure may have changed",
+    "fencedCodeBlockCount": "Fenced code blocks: {{source}} in source vs {{translated}} in translation",
+    "linkCount": "Links: {{source}} in source vs {{translated}} in translation",
+    "headingCount": "Headings: {{source}} in source vs {{translated}} in translation",
+    "listItemCount": "List items: {{source}} in source vs {{translated}} in translation",
+    "codeBlockContentChanged": "Code block #{{index}} was modified",
+    "frontmatterChanged": "Frontmatter was modified"
+  }
+}

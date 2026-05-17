@@ -1,16 +1,130 @@
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use skillsmgr_core::{
-    AdapterPresence, Artifact, ArtifactKind, Installation, Scope, ScannedInstallation, Source,
-    SourceProvenance, Status, Target,
+    AdapterPresence, Artifact, ArtifactKind, Installation, ScannedInstallation, Scope,
+    SkillsMgrError, Source, SourceProvenance, Status, Target,
 };
 use skillsmgr_fetch::{
     AuditFile, AuditMetadata, AuditWarning, AuditWarningKind, ImportAudit, ImportPreview,
     ImportSource,
 };
 use skillsmgr_service::{AdapterStatus, ArtifactGroup, Inventory};
+use skillsmgr_translate::{ProviderKind, TranslateConfig, TranslateOutcome, TranslationValidation};
+
+// ── Error ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorDto {
+    pub code: String,
+    pub params: HashMap<String, String>,
+}
+
+impl ErrorDto {
+    pub fn internal(msg: impl ToString) -> Self {
+        ErrorDto {
+            code: "internal".into(),
+            params: [("message".into(), msg.to_string())].into(),
+        }
+    }
+}
+
+impl From<SkillsMgrError> for ErrorDto {
+    fn from(e: SkillsMgrError) -> Self {
+        let mut params: HashMap<String, String> = HashMap::new();
+        let code: &str = match &e {
+            SkillsMgrError::UnsupportedKind { kind, target } => {
+                params.insert("kind".into(), format!("{kind:?}"));
+                params.insert("target".into(), target.tool_id().into());
+                "unsupportedKind"
+            }
+            SkillsMgrError::UnsupportedTarget { adapter_id, target } => {
+                params.insert("adapterId".into(), adapter_id.clone());
+                params.insert("target".into(), target.tool_id().into());
+                "unsupportedTarget"
+            }
+            SkillsMgrError::Conflict { name, path } => {
+                params.insert("name".into(), name.clone());
+                params.insert("path".into(), path.to_string_lossy().into());
+                "conflict"
+            }
+            SkillsMgrError::SourceConflict {
+                name,
+                existing_source,
+                new_source,
+            } => {
+                params.insert("name".into(), name.clone());
+                params.insert("existingSource".into(), format!("{existing_source:?}"));
+                params.insert("newSource".into(), format!("{new_source:?}"));
+                "sourceConflict"
+            }
+            SkillsMgrError::InvalidArtifact { path, reason } => {
+                params.insert("path".into(), path.to_string_lossy().into());
+                params.insert("reason".into(), reason.clone());
+                "invalidArtifact"
+            }
+            SkillsMgrError::UnsupportedImportSource { input } => {
+                params.insert("input".into(), input.clone());
+                "unsupportedImportSource"
+            }
+            SkillsMgrError::NoSupportedArtifacts { path } => {
+                params.insert("path".into(), path.to_string_lossy().into());
+                "noSupportedArtifacts"
+            }
+            SkillsMgrError::UnsafePath { path, reason } => {
+                params.insert("path".into(), path.to_string_lossy().into());
+                params.insert("reason".into(), reason.clone());
+                "unsafePath"
+            }
+            SkillsMgrError::Fs { path, source } => {
+                params.insert("path".into(), path.to_string_lossy().into());
+                params.insert("message".into(), source.to_string());
+                "fs"
+            }
+            SkillsMgrError::Git { input, message } => {
+                params.insert("input".into(), input.clone());
+                params.insert("message".into(), message.clone());
+                "git"
+            }
+            SkillsMgrError::Registry(msg) => {
+                params.insert("message".into(), msg.clone());
+                "registry"
+            }
+            SkillsMgrError::ReadOnly { tool, operation } => {
+                params.insert("tool".into(), tool.to_string());
+                params.insert("operation".into(), operation.to_string());
+                "readOnly"
+            }
+            SkillsMgrError::TranslateProvider {
+                kind,
+                status,
+                message,
+            } => {
+                params.insert("kind".into(), kind.clone());
+                if let Some(s) = status {
+                    params.insert("status".into(), s.to_string());
+                }
+                params.insert("message".into(), message.clone());
+                "translateProvider"
+            }
+            SkillsMgrError::TranslateConfig { reason } => {
+                params.insert("reason".into(), reason.clone());
+                "translateConfig"
+            }
+            SkillsMgrError::Keyring { message } => {
+                params.insert("message".into(), message.clone());
+                "keyring"
+            }
+        };
+        ErrorDto {
+            code: code.into(),
+            params,
+        }
+    }
+}
 
 // ── Inventory ────────────────────────────────────────────────────────────────
 
@@ -28,6 +142,7 @@ pub struct ArtifactGroupDto {
     pub name: String,
     pub kind: String,
     pub description: String,
+    pub body: Option<String>,
     pub version: Option<String>,
     pub installations: Vec<ScannedInstallationDto>,
     pub also_visible_to: Vec<String>,
@@ -47,6 +162,7 @@ pub struct ArtifactDto {
     pub id: String,
     pub name: String,
     pub description: String,
+    pub body: Option<String>,
     pub version: Option<String>,
     pub kind: String,
     pub source: SourceDto,
@@ -179,8 +295,13 @@ impl From<&ArtifactGroup> for ArtifactGroupDto {
             name: g.name.clone(),
             kind: kind_str(g.kind),
             description: g.description.clone(),
+            body: g.body.clone(),
             version: g.version.clone(),
-            installations: g.installations.iter().map(ScannedInstallationDto::from).collect(),
+            installations: g
+                .installations
+                .iter()
+                .map(ScannedInstallationDto::from)
+                .collect(),
             also_visible_to: g.also_visible_to.clone(),
         }
     }
@@ -205,6 +326,7 @@ impl From<&Artifact> for ArtifactDto {
             id: a.id.to_string(),
             name: a.name.clone(),
             description: a.description.clone(),
+            body: a.body.clone(),
             version: a.version.clone(),
             kind: kind_str(a.kind),
             source: SourceDto::from(&a.source),
@@ -364,6 +486,78 @@ impl From<&AuditWarning> for AuditWarningDto {
             },
             message: w.message.clone(),
         }
+    }
+}
+
+// ── Translate config ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslateOutcomeDto {
+    pub text: String,
+    pub locale: String,
+    pub field: String,
+    pub source_sha256: String,
+    pub cache_status: String,
+    pub provider_kind: String,
+    pub validation: TranslationValidation,
+}
+
+impl From<TranslateOutcome> for TranslateOutcomeDto {
+    fn from(outcome: TranslateOutcome) -> Self {
+        TranslateOutcomeDto {
+            text: outcome.text,
+            locale: outcome.locale,
+            field: outcome.field,
+            source_sha256: outcome.source_sha256,
+            cache_status: outcome.cache_status.as_id().to_string(),
+            provider_kind: outcome.provider_kind.to_string(),
+            validation: outcome.validation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslateConfigDto {
+    pub provider_kind: String,
+    pub base_url: String,
+    pub model: String,
+    pub timeout_ms: u64,
+    pub max_retries: u32,
+    pub api_key_present: bool,
+}
+
+impl TranslateConfigDto {
+    pub fn from_parts(config: &TranslateConfig, api_key_present: bool) -> Self {
+        TranslateConfigDto {
+            provider_kind: config.provider_kind.as_id().to_string(),
+            base_url: config.base_url.clone(),
+            model: config.model.clone(),
+            timeout_ms: config.timeout_ms,
+            max_retries: config.max_retries,
+            api_key_present,
+        }
+    }
+
+    pub fn to_config(&self) -> Result<TranslateConfig, ErrorDto> {
+        let provider_kind = match self.provider_kind.as_str() {
+            "passthrough" => ProviderKind::Passthrough,
+            "openai-compat" => ProviderKind::OpenAiCompat,
+            other => {
+                return Err(ErrorDto {
+                    code: "translateConfig".into(),
+                    params: [("reason".into(), format!("unknown provider: {other}"))].into(),
+                })
+            }
+        };
+        Ok(TranslateConfig {
+            provider_kind,
+            base_url: self.base_url.clone(),
+            model: self.model.clone(),
+            timeout_ms: self.timeout_ms,
+            max_retries: self.max_retries,
+        })
     }
 }
 

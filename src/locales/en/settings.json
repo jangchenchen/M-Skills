@@ -1,0 +1,23 @@
+{
+  "title": "Settings",
+  "translationSection": "Translation",
+  "provider": "Provider",
+  "providerPassthrough": "Passthrough (no translation)",
+  "providerOpenAiCompat": "OpenAI-compatible HTTP",
+  "baseUrl": "Base URL",
+  "baseUrlHint": "e.g. https://api.deepseek.com/v1 or https://yunwu.ai/v1",
+  "model": "Model",
+  "apiKey": "API Key",
+  "apiKeyPlaceholderSet": "•••••••• (stored in Keychain — leave blank to keep)",
+  "apiKeyPlaceholderEmpty": "Paste API key",
+  "apiKeyClear": "Clear stored key",
+  "timeoutMs": "Timeout (ms)",
+  "maxRetries": "Max retries on 5xx / network",
+  "test": "Test",
+  "testing": "Testing…",
+  "testSuccess": "Test succeeded: {{result}}",
+  "save": "Save",
+  "saving": "Saving…",
+  "cancel": "Cancel",
+  "open": "Open settings"
+}

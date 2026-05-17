@@ -1,0 +1,21 @@
+{
+  "unsupportedKind": "目标 {{target}} 不支持 {{kind}} 类型",
+  "unsupportedTarget": "适配器 {{adapterId}} 不支持目标 {{target}}",
+  "conflict": "制品「{{name}}」已存在于 {{path}}",
+  "sourceConflict": "制品「{{name}}」来源冲突：{{existingSource}} 与 {{newSource}}",
+  "invalidArtifact": "{{path}} 处的制品无效：{{reason}}",
+  "unsupportedImportSource": "导入来源 {{input}} 不受支持",
+  "noSupportedArtifacts": "{{path}} 中未找到支持的制品",
+  "unsafePath": "不安全路径 {{path}}：{{reason}}",
+  "fs": "{{path}} 处发生文件系统错误：{{message}}",
+  "git": "导入 {{input}} 时发生 Git 错误：{{message}}",
+  "registry": "注册表错误：{{message}}",
+  "readOnly": "{{tool}} 在当前版本中不支持 {{operation}} 操作",
+  "noPendingImport": "无待处理导入，请先发起新的导入",
+  "invalidCandidateIndex": "制品选择无效",
+  "internal": "内部错误：{{message}}",
+  "unknown": "未知错误",
+  "translateProvider": "翻译服务错误（{{kind}}，状态码 {{status}}）：{{message}}",
+  "translateConfig": "翻译配置错误：{{reason}}",
+  "keyring": "钥匙串错误：{{message}}"
+}
