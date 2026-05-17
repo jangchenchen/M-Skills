@@ -7,7 +7,9 @@ use skillsmgr_core::{Result, SkillsMgrError};
 use crate::{TranslationProvider, TranslationRequest};
 
 const PROVIDER_KIND: &str = "openai-compat";
-const SYSTEM_PROMPT_TEMPLATE: &str = "You are a precise technical translator. \
+pub const PROMPT_VERSION: &str = "1";
+const SYSTEM_PROMPT_TEMPLATE: &str = "Prompt version: {{prompt_version}}. \
+You are a precise technical translator. \
 Translate the user's text into the target locale ({{locale}}). \
 Preserve every Markdown structure, code fence, inline code, list bullet, \
 heading, table, link target, and frontmatter key exactly as-is. \
@@ -51,7 +53,9 @@ impl OpenAICompatProvider {
     }
 
     fn build_body(&self, request: &TranslationRequest) -> ChatRequest {
-        let system_prompt = SYSTEM_PROMPT_TEMPLATE.replace("{{locale}}", &request.locale);
+        let system_prompt = SYSTEM_PROMPT_TEMPLATE
+            .replace("{{prompt_version}}", PROMPT_VERSION)
+            .replace("{{locale}}", &request.locale);
         ChatRequest {
             model: self.model.clone(),
             temperature: 0.2,
@@ -252,6 +256,9 @@ mod tests {
         assert_eq!(body.temperature, 0.2);
         assert_eq!(body.messages.len(), 2);
         assert_eq!(body.messages[0].role, "system");
+        assert!(body.messages[0]
+            .content
+            .contains(&format!("Prompt version: {PROMPT_VERSION}")));
         assert!(body.messages[0].content.contains("target locale (zh-Hans)"));
         assert!(body.messages[0]
             .content
