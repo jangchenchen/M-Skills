@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use skillsmgr_core::{Result, SkillsMgrError};
 
 use crate::{TranslationProvider, TranslationRequest};
@@ -102,19 +103,26 @@ impl OpenAICompatProvider {
         let status_code = status.as_u16();
 
         if status.is_success() {
-            return match response.json::<ChatResponse>().await {
-                Ok(parsed) => match parsed.choices.into_iter().next() {
-                    Some(choice) => AttemptOutcome::Done(Ok(choice.message.content)),
-                    None => AttemptOutcome::Done(Err(SkillsMgrError::TranslateProvider {
+            let body_text = match response.text().await {
+                Ok(text) => text,
+                Err(e) => {
+                    return AttemptOutcome::Done(Err(SkillsMgrError::TranslateProvider {
                         kind: PROVIDER_KIND.into(),
                         status: Some(status_code),
-                        message: "response had no choices".into(),
-                    })),
-                },
-                Err(e) => AttemptOutcome::Done(Err(SkillsMgrError::TranslateProvider {
+                        message: format!("read response body: {e}"),
+                    }));
+                }
+            };
+            return match decode_chat_completion_text(&body_text) {
+                Ok(text) => AttemptOutcome::Done(Ok(text)),
+                Err(reason) => AttemptOutcome::Done(Err(SkillsMgrError::TranslateProvider {
                     kind: PROVIDER_KIND.into(),
                     status: Some(status_code),
-                    message: format!("decode response: {e}"),
+                    message: format!(
+                        "decode response from {}: {reason}; body: {}",
+                        self.endpoint(),
+                        truncate_body(&body_text)
+                    ),
                 })),
             };
         }
@@ -123,7 +131,11 @@ impl OpenAICompatProvider {
         let err = SkillsMgrError::TranslateProvider {
             kind: PROVIDER_KIND.into(),
             status: Some(status_code),
-            message: truncate_body(&body_text),
+            message: format!(
+                "{} returned: {}",
+                self.endpoint(),
+                truncate_body(&body_text)
+            ),
         };
         if status.is_server_error() {
             AttemptOutcome::Retryable(err)
@@ -178,6 +190,116 @@ fn truncate_body(body: &str) -> String {
     }
 }
 
+fn decode_chat_completion_text(body: &str) -> std::result::Result<String, String> {
+    let value: Value = serde_json::from_str(body).map_err(|e| {
+        if looks_like_html(body) {
+            format!(
+                "expected JSON but received HTML. Check that the Base URL points to an OpenAI-compatible API root, not a web page; JSON error: {e}"
+            )
+        } else {
+            format!("invalid JSON response: {e}")
+        }
+    })?;
+    extract_chat_completion_text(&value).ok_or_else(|| {
+        if let Some(refusal) = extract_chat_completion_refusal(&value) {
+            format!("provider refusal: {refusal}")
+        } else {
+            "response had no translated text".into()
+        }
+    })
+}
+
+fn looks_like_html(body: &str) -> bool {
+    let trimmed = body.trim_start();
+    trimmed.starts_with("<!DOCTYPE html")
+        || trimmed.starts_with("<!doctype html")
+        || trimmed.starts_with("<html")
+}
+
+fn extract_chat_completion_text(value: &Value) -> Option<String> {
+    if let Some(choices) = value.get("choices").and_then(Value::as_array) {
+        if let Some(choice) = choices.first() {
+            if let Some(text) = extract_choice_text(choice) {
+                return Some(text);
+            }
+        }
+    }
+
+    value
+        .get("output_text")
+        .and_then(extract_text_value)
+        .or_else(|| value.get("text").and_then(extract_text_value))
+        .or_else(|| value.get("message").and_then(extract_message_text))
+}
+
+fn extract_chat_completion_refusal(value: &Value) -> Option<String> {
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("refusal"))
+        .and_then(extract_text_value)
+}
+
+fn extract_choice_text(choice: &Value) -> Option<String> {
+    choice
+        .get("message")
+        .and_then(extract_message_text)
+        .or_else(|| choice.get("delta").and_then(extract_message_text))
+        .or_else(|| choice.get("content").and_then(extract_text_value))
+        .or_else(|| choice.get("text").and_then(extract_text_value))
+}
+
+fn extract_message_text(message: &Value) -> Option<String> {
+    message
+        .get("content")
+        .and_then(extract_content_text)
+        .or_else(|| message.get("text").and_then(extract_text_value))
+        .or_else(|| message.get("output_text").and_then(extract_text_value))
+}
+
+fn extract_content_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(_) => extract_text_value(value),
+        Value::Array(parts) => {
+            let mut text = String::new();
+            for part in parts {
+                if let Some(part_text) = extract_content_part_text(part) {
+                    text.push_str(&part_text);
+                }
+            }
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        Value::Object(_) => value
+            .get("text")
+            .and_then(extract_text_value)
+            .or_else(|| value.get("content").and_then(extract_text_value))
+            .or_else(|| value.get("value").and_then(extract_text_value)),
+        _ => None,
+    }
+}
+
+fn extract_content_part_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(_) => extract_text_value(value),
+        Value::Object(_) => value
+            .get("text")
+            .and_then(extract_text_value)
+            .or_else(|| value.get("content").and_then(extract_text_value))
+            .or_else(|| value.get("value").and_then(extract_text_value)),
+        _ => None,
+    }
+}
+
+fn extract_text_value(value: &Value) -> Option<String> {
+    value.as_str().map(ToOwned::to_owned)
+}
+
 #[derive(Debug, Serialize)]
 struct ChatRequest {
     model: String,
@@ -189,16 +311,6 @@ struct ChatRequest {
 struct ChatMessage {
     role: String,
     content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatResponse {
-    choices: Vec<ChatChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatChoice {
-    message: ChatMessage,
 }
 
 #[cfg(test)]
@@ -225,6 +337,48 @@ mod tests {
         serde_json::json!({
             "choices": [{"message": {"role": "assistant", "content": translated}}]
         })
+    }
+
+    #[test]
+    fn decode_response_accepts_array_content_without_role() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "你"},
+                        {"type": "text", "text": "好"}
+                    ]
+                }
+            }]
+        })
+        .to_string();
+
+        assert_eq!(decode_chat_completion_text(&body).unwrap(), "你好");
+    }
+
+    #[test]
+    fn decode_response_accepts_choice_text_fallback() {
+        let body = serde_json::json!({
+            "choices": [{"text": "你好"}]
+        })
+        .to_string();
+
+        assert_eq!(decode_chat_completion_text(&body).unwrap(), "你好");
+    }
+
+    #[test]
+    fn decode_response_explains_html_success_body() {
+        let body = "<!DOCTYPE html><html lang=\"zh-CN\"><head><title>Login</title></head></html>";
+        let err = decode_chat_completion_text(body).unwrap_err();
+
+        assert!(
+            err.contains("expected JSON but received HTML"),
+            "got: {err}"
+        );
+        assert!(
+            err.contains("Base URL points to an OpenAI-compatible API root"),
+            "got: {err}"
+        );
     }
 
     #[test]
