@@ -296,6 +296,23 @@ mod tests {
         }
     }
 
+    struct FailingProvider;
+
+    #[async_trait]
+    impl TranslationProvider for FailingProvider {
+        async fn translate(&self, _request: &TranslationRequest) -> Result<String> {
+            Err(SkillsMgrError::TranslateProvider {
+                kind: "failing".into(),
+                status: Some(503),
+                message: "upstream unavailable".into(),
+            })
+        }
+
+        fn kind(&self) -> &'static str {
+            "failing"
+        }
+    }
+
     #[async_trait]
     impl TranslationProvider for CountingProvider {
         async fn translate(&self, request: &TranslationRequest) -> Result<String> {
@@ -365,6 +382,39 @@ mod tests {
         assert_eq!(after.text, "call-1:Hello");
         assert_eq!(after.cache_status, CacheStatus::Hit);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_force_refresh_leaves_existing_cache_intact() {
+        let registry = Registry::in_memory().unwrap();
+        let manager = TranslationManager::new(registry, Arc::new(StubProvider { label: "old" }));
+        let request = sample_request();
+
+        let first = manager
+            .translate_or_get(request.clone(), false)
+            .await
+            .unwrap();
+        assert_eq!(first.text, "old:Hello");
+        assert_eq!(first.cache_status, CacheStatus::Miss);
+
+        manager.swap_provider(Arc::new(FailingProvider));
+        let err = manager
+            .translate_or_get(request.clone(), true)
+            .await
+            .unwrap_err();
+        match err {
+            SkillsMgrError::TranslateProvider { kind, status, .. } => {
+                assert_eq!(kind, "failing");
+                assert_eq!(status, Some(503));
+            }
+            other => panic!("expected TranslateProvider, got {other:?}"),
+        }
+
+        manager.swap_provider(Arc::new(StubProvider { label: "new" }));
+        let cached = manager.translate_or_get(request, false).await.unwrap();
+        assert_eq!(cached.text, "old:Hello");
+        assert_eq!(cached.cache_status, CacheStatus::Hit);
+        assert_eq!(cached.provider_kind, "new");
     }
 
     #[tokio::test]
@@ -590,22 +640,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validation_is_ok_for_trivial_text() {
-        let registry = Registry::in_memory().unwrap();
-        let manager = TranslationManager::new(registry, Arc::new(StubProvider { label: "x" }));
-
-        let out = manager
-            .translate_or_get(sample_request(), false)
-            .await
-            .unwrap();
-        assert!(
-            out.validation.ok,
-            "got warnings: {:?}",
-            out.validation.warnings
-        );
-    }
-
-    #[tokio::test]
     async fn validation_surfaces_warnings_when_provider_drops_structure() {
         // A provider that strips markdown structure on purpose.
         struct StrippingProvider;
@@ -629,6 +663,46 @@ mod tests {
         let out = manager.translate_or_get(request, false).await.unwrap();
         assert!(!out.validation.ok);
         assert!(out
+            .validation
+            .warnings
+            .iter()
+            .any(|w| matches!(w, MarkdownWarning::LinkCount { .. })));
+    }
+
+    #[tokio::test]
+    async fn force_refresh_reports_validation_for_refreshed_output() {
+        // First provider populates a clean cache row; the second simulates a
+        // retranslation that drops markdown structure.
+        struct LinkDroppingProvider;
+        #[async_trait]
+        impl TranslationProvider for LinkDroppingProvider {
+            async fn translate(&self, _request: &TranslationRequest) -> Result<String> {
+                Ok("译文丢了链接".to_string())
+            }
+        }
+
+        let registry = Registry::in_memory().unwrap();
+        let manager = TranslationManager::new(registry, Arc::new(StubProvider { label: "clean" }));
+
+        let request = TranslationRequest {
+            artifact_name: "demo".into(),
+            file_path: PathBuf::from("SKILL.md"),
+            field: "body".into(),
+            source_text: "See [docs](https://example.com)".into(),
+            locale: "zh".into(),
+        };
+        let miss = manager
+            .translate_or_get(request.clone(), false)
+            .await
+            .unwrap();
+        assert_eq!(miss.cache_status, CacheStatus::Miss);
+        assert!(miss.validation.ok);
+
+        manager.swap_provider(Arc::new(LinkDroppingProvider));
+        let refreshed = manager.translate_or_get(request, true).await.unwrap();
+        assert_eq!(refreshed.cache_status, CacheStatus::Refreshed);
+        assert!(!refreshed.validation.ok);
+        assert!(refreshed
             .validation
             .warnings
             .iter()

@@ -303,3 +303,143 @@ fn installation_from_dto(dto: InstallationDto) -> Result<Installation, ErrorDto>
         installed_version: dto.installed_version,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use skillsmgr_core::Result;
+    use skillsmgr_registry::Registry;
+    use skillsmgr_service::Service;
+    use skillsmgr_translate::{TranslationManager, TranslationProvider};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tauri::ipc::{CallbackFn, InvokeBody};
+    use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
+    use tauri::webview::InvokeRequest;
+    use tauri_utils::acl::ExecutionContext;
+
+    struct CountingProvider {
+        calls: AtomicUsize,
+    }
+
+    impl CountingProvider {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl TranslationProvider for CountingProvider {
+        async fn translate(&self, request: &TranslationRequest) -> Result<String> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(format!("call-{n}:{}", request.source_text))
+        }
+
+        fn kind(&self) -> &'static str {
+            "counting"
+        }
+    }
+
+    fn test_app(provider: Arc<dyn TranslationProvider>) -> tauri::App<tauri::test::MockRuntime> {
+        let home = tempfile::tempdir().unwrap();
+        let mut context = mock_context(noop_assets());
+        context
+            .runtime_authority_mut()
+            .__allow_command("translate_artifact".into(), ExecutionContext::Local);
+        context
+            .runtime_authority_mut()
+            .__allow_command("clear_translation_cache".into(), ExecutionContext::Local);
+
+        mock_builder()
+            .manage(AppState {
+                service: Service::with_adapters(Vec::new()),
+                translations: TranslationManager::new(Registry::in_memory().unwrap(), provider),
+                translate_config_path: home.path().join("translate.toml"),
+                pending_import: tokio::sync::Mutex::new(None),
+            })
+            .invoke_handler(tauri::generate_handler![
+                translate_artifact,
+                clear_translation_cache
+            ])
+            .build(context)
+            .expect("failed to build mock app")
+    }
+
+    fn request(cmd: &str, body: serde_json::Value) -> InvokeRequest {
+        let url = if cfg!(any(windows, target_os = "android")) {
+            "http://tauri.localhost"
+        } else {
+            "tauri://localhost"
+        };
+        InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: url.parse().unwrap(),
+            body: InvokeBody::Json(body),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        }
+    }
+
+    fn translate_body() -> serde_json::Value {
+        serde_json::json!({
+            "artifactName": "demo",
+            "filePath": "SKILL.md",
+            "field": "body",
+            "sourceText": "Hello",
+            "locale": "zh",
+            "forceRefresh": false
+        })
+    }
+
+    fn clear_body() -> serde_json::Value {
+        serde_json::json!({
+            "artifactName": "demo",
+            "filePath": "SKILL.md",
+            "field": "body",
+            "locale": "zh"
+        })
+    }
+
+    #[test]
+    fn clear_translation_cache_command_removes_cached_translation() {
+        let provider = Arc::new(CountingProvider::new());
+        let app = test_app(provider.clone());
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+
+        let first = get_ipc_response(&webview, request("translate_artifact", translate_body()))
+            .unwrap()
+            .deserialize::<TranslateOutcomeDto>()
+            .unwrap();
+        assert_eq!(first.text, "call-0:Hello");
+        assert_eq!(first.cache_status, "miss");
+
+        let cached = get_ipc_response(&webview, request("translate_artifact", translate_body()))
+            .unwrap()
+            .deserialize::<TranslateOutcomeDto>()
+            .unwrap();
+        assert_eq!(cached.text, "call-0:Hello");
+        assert_eq!(cached.cache_status, "hit");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+        let deleted = get_ipc_response(&webview, request("clear_translation_cache", clear_body()))
+            .unwrap()
+            .deserialize::<usize>()
+            .unwrap();
+        assert_eq!(deleted, 1);
+
+        let after = get_ipc_response(&webview, request("translate_artifact", translate_body()))
+            .unwrap()
+            .deserialize::<TranslateOutcomeDto>()
+            .unwrap();
+        assert_eq!(after.text, "call-1:Hello");
+        assert_eq!(after.cache_status, "miss");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+}

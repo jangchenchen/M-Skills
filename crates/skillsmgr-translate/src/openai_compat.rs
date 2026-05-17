@@ -223,6 +223,48 @@ mod tests {
         })
     }
 
+    #[test]
+    fn request_body_preserves_prompt_shape_and_user_text() {
+        let provider = OpenAICompatProvider::new(
+            "https://api.example.test/v1/".into(),
+            "test-model".into(),
+            "test-key".into(),
+            Duration::from_secs(5),
+            0,
+        )
+        .unwrap();
+
+        let source =
+            "---\nname: demo\n---\n\n# Title\n\nUse `code` and [docs](https://example.com).";
+        let body = provider.build_body(&TranslationRequest {
+            artifact_name: "demo".into(),
+            file_path: PathBuf::from("SKILL.md"),
+            field: "body".into(),
+            source_text: source.into(),
+            locale: "zh-Hans".into(),
+        });
+
+        assert_eq!(
+            provider.endpoint(),
+            "https://api.example.test/v1/chat/completions"
+        );
+        assert_eq!(body.model, "test-model");
+        assert_eq!(body.temperature, 0.2);
+        assert_eq!(body.messages.len(), 2);
+        assert_eq!(body.messages[0].role, "system");
+        assert!(body.messages[0].content.contains("target locale (zh-Hans)"));
+        assert!(body.messages[0]
+            .content
+            .contains("Preserve every Markdown structure"));
+        assert!(body.messages[0].content.contains("link target"));
+        assert!(body.messages[0].content.contains("frontmatter key"));
+        assert!(body.messages[0]
+            .content
+            .contains("output only the translated text"));
+        assert_eq!(body.messages[1].role, "user");
+        assert_eq!(body.messages[1].content, source);
+    }
+
     struct CountingResponder {
         calls: Arc<AtomicUsize>,
         fail_first: usize,
