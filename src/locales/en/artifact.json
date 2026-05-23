@@ -13,6 +13,85 @@
   "visibleTo": "visible to: {{tools}}",
   "version": "v{{version}}",
   "body": "Content",
+  "capabilities": "Capabilities",
+  "compatibility": "Compatibility",
+  "summary": {
+    "title": "AI Summary",
+    "commands": "Commands",
+    "capabilities": "What it does",
+    "useCases": "Use cases",
+    "examples": "Examples",
+    "loading": "Generating summary…",
+    "empty": "No summary yet.",
+    "failed": "Could not generate summary."
+  },
+  "adaptToCodex": "Adapt install to Codex",
+  "adaptingCodex": "Adapting…",
+  "adaptedCodexStatus": "Already adapted to Codex",
+  "adaptedCodexCurrent": "Codex adaptation is based on the current Claude Code version",
+  "adaptedCodexOld": "Codex adaptation is based on an older Claude Code version",
+  "adaptedCodexName": "Adapted skill: {{name}}",
+  "reviewNewCodexAdaptation": "Review new Codex adaptation",
+  "forkButton": "Fork as custom skill",
+  "editButton": "Edit",
+  "name": "Name",
+  "nameConflict": "A skill with this name already exists at {{path}}. Rename to continue.",
+  "adapt": {
+    "title": "Review Codex adaptation",
+    "subtitle": "Inspect the diff and compatibility notes. Nothing is written until you confirm.",
+    "confirm": "Install adapted skill",
+    "confirming": "Installing…"
+  },
+  "fork": {
+    "title": "Fork as custom skill",
+    "subtitle": "Create a local custom skill without modifying the original.",
+    "confirm": "Continue",
+    "pickTarget": "Where should the fork be installed?"
+  },
+  "edit": {
+    "title": "Edit custom skill",
+    "saveReview": "Review & save",
+    "saving": "Reviewing…"
+  },
+  "rewrite": {
+    "openButton": "AI rewrite…",
+    "closeButton": "Close AI rewrite",
+    "title": "AI rewrite",
+    "subtitle": "The model returns a draft only. Nothing is written until you apply the draft and save.",
+    "modeLabel": "Mode",
+    "mode": {
+      "adapt_to_codex": "Adapt to Codex",
+      "complete_missing_info": "Complete missing info",
+      "reduce_risk": "Reduce risk",
+      "customize_workflow": "Customize workflow",
+      "simplify": "Simplify"
+    },
+    "instructionLabel": "What should the model do?",
+    "instructionPlaceholder": "e.g. Make this safer to run unattended; turn shell pipes into Ask user first steps.",
+    "submit": "Generate draft",
+    "submitting": "Generating…",
+    "summary": "Summary",
+    "notes": "Notes",
+    "draftHeader": "Draft SKILL.md",
+    "diffHeader": "Diff vs current editor",
+    "noChanges": "Draft is identical to the current editor content.",
+    "providedBy": "Drafted by {{providerKind}} / {{model}}.",
+    "applyDraft": "Apply draft to editor",
+    "discardDraft": "Discard draft",
+    "appliedNote": "Draft applied. Review the editor and save when ready."
+  },
+  "diff": {
+    "title": "Show raw original / adapted",
+    "added": "Added",
+    "removed": "Removed",
+    "noChanges": "No changes."
+  },
+  "lineage": {
+    "header": "Lineage",
+    "adaptedFrom": "Adapted from",
+    "forkedFrom": "Forked from",
+    "sha": "Source SHA"
+  },
   "translate": "Translate",
   "retranslate": "Retranslate",
   "translating": "Translating…",
@@ -25,7 +104,8 @@
     "cached": "Cached",
     "justTranslated": "Just translated",
     "refreshed": "Refreshed",
-    "passthrough": "Not translated (passthrough)"
+    "passthrough": "Not translated (passthrough)",
+    "fallback": "via fallback"
   },
   "validation": {
     "header": "Markdown structure may have changed",

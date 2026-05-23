@@ -1,8 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  ArtifactDto,
+  CompatibilityReviewDto,
+  ConfirmDraftInstallRequest,
+  ForkPreviewRequest,
   ImportPreviewDto,
+  InstallOutcomeDto,
   InstallationDto,
   InventoryDto,
+  ReviewOutcomeDto,
+  RewriteSkillOutcomeDto,
+  RewriteSkillRequest,
+  SaveCustomSkillEditRequest,
+  SkillDraftPreviewDto,
+  SkillSummaryDto,
+  SkillSummaryRequest,
   TargetDto,
   TranslateConfigDto,
   TranslateOutcomeDto,
@@ -18,9 +30,66 @@ export function previewImport(pathOrUrl: string): Promise<ImportPreviewDto> {
 
 export function install(
   candidateIndex: number,
-  target: TargetDto
+  targets: TargetDto[]
+): Promise<InstallOutcomeDto[]> {
+  return invoke("install", { candidateIndex, targets });
+}
+
+export function reviewImport(
+  candidateIndex: number,
+  locale: string | null
+): Promise<ReviewOutcomeDto> {
+  return invoke("review_import", { candidateIndex, locale });
+}
+
+export function reviewArtifactCompatibility(
+  artifact: ArtifactDto,
+  targets: TargetDto[]
+): Promise<CompatibilityReviewDto[]> {
+  return invoke("review_artifact_compatibility", { artifact, targets });
+}
+
+export function previewAdaptSkillForCodex(
+  artifact: ArtifactDto
+): Promise<SkillDraftPreviewDto> {
+  return invoke("preview_adapt_skill_for_codex", { artifact });
+}
+
+export function previewForkSkill(
+  request: ForkPreviewRequest
+): Promise<SkillDraftPreviewDto> {
+  return invoke("preview_fork_skill", { request });
+}
+
+export function saveCustomSkillEdit(
+  request: SaveCustomSkillEditRequest
+): Promise<SkillDraftPreviewDto> {
+  return invoke("save_custom_skill_edit", { request });
+}
+
+export function confirmInstallSkillDraft(
+  request: ConfirmDraftInstallRequest
 ): Promise<InstallationDto> {
-  return invoke("install", { candidateIndex, target });
+  return invoke("confirm_install_skill_draft", { request });
+}
+
+export function rewriteSkillWithLlm(
+  request: RewriteSkillRequest
+): Promise<RewriteSkillOutcomeDto> {
+  return invoke("rewrite_skill_with_llm", { request });
+}
+
+export function getSkillSummary(
+  artifact: ArtifactDto,
+  locale: string
+): Promise<SkillSummaryDto | null> {
+  return invoke("get_skill_summary", { artifact, locale });
+}
+
+export function generateSkillSummary(
+  request: SkillSummaryRequest
+): Promise<SkillSummaryDto> {
+  return invoke("generate_skill_summary", { request });
 }
 
 export function uninstall(installation: InstallationDto): Promise<void> {

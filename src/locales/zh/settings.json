@@ -7,6 +7,8 @@
   "baseUrl": "Base URL",
   "baseUrlHint": "例如 https://api.deepseek.com/v1 或 https://yunwu.ai/v1",
   "model": "模型",
+  "fallbackModel": "备用模型",
+  "fallbackModelHint": "主模型返回错误（4xx/5xx/网络/空内容）时,自动改用该模型重试一次。留空表示不启用。",
   "apiKey": "API Key",
   "apiKeyPlaceholderSet": "•••••••• （已保存在钥匙串，留空表示保留）",
   "apiKeyPlaceholderEmpty": "粘贴 API Key",

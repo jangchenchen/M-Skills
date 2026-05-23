@@ -66,6 +66,10 @@ async fn main() -> ExitCode {
             if !group.also_visible_to.is_empty() {
                 println!("        visible to: {}", group.also_visible_to.join(", "));
             }
+            if !group.capabilities.is_empty() {
+                let names: Vec<&str> = group.capabilities.iter().map(|c| c.name.as_str()).collect();
+                println!("        capabilities: {}", names.join(", "));
+            }
         }
     }
 

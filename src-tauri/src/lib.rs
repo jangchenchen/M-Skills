@@ -1,15 +1,19 @@
 use skillsmgr_service::Service;
 use skillsmgr_translate::{
-    build_provider, keyring_store, PassthroughTranslationProvider, ProviderKind, TranslateConfig,
-    TranslationManager,
+    build_providers, keyring_store, PassthroughTranslationProvider, ProviderKind, TranslateConfig,
+    TranslationManager, TranslationProvider,
 };
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
 mod commands;
+mod compatibility;
 mod dto;
+mod review;
+mod rewrite;
 mod state;
+mod summary;
 
 use state::AppState;
 
@@ -47,16 +51,23 @@ pub fn run() {
                 }
                 ProviderKind::Passthrough => None,
             };
-            let provider = build_provider(&config, api_key).unwrap_or_else(|err| {
+            let (primary, fallback) = build_providers(&config, api_key).unwrap_or_else(|err| {
                 log::warn!("build translation provider: {err}; falling back to passthrough");
-                Arc::new(PassthroughTranslationProvider)
+                (
+                    Arc::new(PassthroughTranslationProvider) as Arc<dyn TranslationProvider>,
+                    None,
+                )
             });
+
+            let translations = Arc::new(TranslationManager::new(registry, primary));
+            translations.set_fallback(fallback);
 
             app.manage(AppState {
                 service,
-                translations: TranslationManager::new(registry, provider),
+                translations,
                 translate_config_path,
                 pending_import: Mutex::new(None),
+                summary_failures: Arc::new(summary::SummaryFailureCache::new()),
             });
             Ok(())
         })
@@ -72,6 +83,15 @@ pub fn run() {
             commands::get_translate_config,
             commands::set_translate_config,
             commands::test_translate_provider,
+            commands::review_import,
+            commands::review_artifact_compatibility,
+            commands::preview_adapt_skill_for_codex,
+            commands::preview_fork_skill,
+            commands::save_custom_skill_edit,
+            commands::confirm_install_skill_draft,
+            commands::rewrite_skill_with_llm,
+            commands::get_skill_summary,
+            commands::generate_skill_summary,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

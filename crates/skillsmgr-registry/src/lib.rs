@@ -56,6 +56,26 @@ pub struct TranslationInput {
     pub translated_text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistrySkillSummary {
+    pub id: String,
+    pub skill_name: String,
+    pub source_sha256: String,
+    pub locale: String,
+    pub summary_json: String,
+    pub model: String,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillSummaryInput {
+    pub skill_name: String,
+    pub source_sha256: String,
+    pub locale: String,
+    pub summary_json: String,
+    pub model: String,
+}
+
 impl Registry {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -256,6 +276,83 @@ impl Registry {
         })
     }
 
+    pub fn skill_summary(
+        &self,
+        skill_name: &str,
+        source_sha256: &str,
+        locale: &str,
+    ) -> Result<Option<RegistrySkillSummary>> {
+        self.connection
+            .query_row(
+                "SELECT id, skill_name, source_sha256, locale, summary_json, model, generated_at
+                 FROM skill_summaries
+                 WHERE skill_name = ?1 AND source_sha256 = ?2 AND locale = ?3",
+                params![skill_name, source_sha256, locale],
+                read_registry_skill_summary,
+            )
+            .optional()
+            .map_err(registry_error)
+    }
+
+    pub fn upsert_skill_summary(&self, input: &SkillSummaryInput) -> Result<RegistrySkillSummary> {
+        let generated_at = Utc::now();
+        let id = skill_summary_id(&input.skill_name, &input.source_sha256, &input.locale);
+
+        let tx = self
+            .connection
+            .unchecked_transaction()
+            .map_err(registry_error)?;
+        tx.execute(
+            "INSERT INTO skill_summaries (
+                    id, skill_name, source_sha256, locale, summary_json, model, generated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(skill_name, source_sha256, locale) DO UPDATE SET
+                    summary_json = excluded.summary_json,
+                    model = excluded.model,
+                    generated_at = excluded.generated_at",
+            params![
+                id,
+                input.skill_name,
+                input.source_sha256,
+                input.locale,
+                input.summary_json,
+                input.model,
+                generated_at.to_rfc3339(),
+            ],
+        )
+        .map_err(registry_error)?;
+        tx.execute(
+            "DELETE FROM skill_summaries
+             WHERE skill_name = ?1
+               AND locale = ?2
+               AND source_sha256 <> ?3",
+            params![input.skill_name, input.locale, input.source_sha256],
+        )
+        .map_err(registry_error)?;
+        tx.commit().map_err(registry_error)?;
+
+        Ok(RegistrySkillSummary {
+            id,
+            skill_name: input.skill_name.clone(),
+            source_sha256: input.source_sha256.clone(),
+            locale: input.locale.clone(),
+            summary_json: input.summary_json.clone(),
+            model: input.model.clone(),
+            generated_at,
+        })
+    }
+
+    pub fn clear_skill_summary(&self, skill_name: &str, locale: &str) -> Result<usize> {
+        let deleted = self
+            .connection
+            .execute(
+                "DELETE FROM skill_summaries WHERE skill_name = ?1 AND locale = ?2",
+                params![skill_name, locale],
+            )
+            .map_err(registry_error)?;
+        Ok(deleted)
+    }
+
     fn migrate(&self) -> Result<()> {
         self.connection
             .execute_batch(
@@ -305,6 +402,19 @@ impl Registry {
 
                 CREATE UNIQUE INDEX IF NOT EXISTS translations_lookup
                     ON translations (artifact_name, file_path, field, source_sha256, locale);
+
+                CREATE TABLE IF NOT EXISTS skill_summaries (
+                    id TEXT PRIMARY KEY,
+                    skill_name TEXT NOT NULL,
+                    source_sha256 TEXT NOT NULL,
+                    locale TEXT NOT NULL,
+                    summary_json TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    generated_at TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS skill_summaries_lookup
+                    ON skill_summaries (skill_name, source_sha256, locale);
                 ",
             )
             .map_err(registry_error)
@@ -473,6 +583,28 @@ fn read_registry_translation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Regist
     })
 }
 
+fn read_registry_skill_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistrySkillSummary> {
+    let generated_at: String = row.get(6)?;
+    let generated_at = DateTime::parse_from_rfc3339(&generated_at)
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?
+        .with_timezone(&Utc);
+    Ok(RegistrySkillSummary {
+        id: row.get(0)?,
+        skill_name: row.get(1)?,
+        source_sha256: row.get(2)?,
+        locale: row.get(3)?,
+        summary_json: row.get(4)?,
+        model: row.get(5)?,
+        generated_at,
+    })
+}
+
 fn parse_uuid_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Uuid> {
     let value: String = row.get(index)?;
     Uuid::parse_str(&value).map_err(|error| {
@@ -495,6 +627,10 @@ fn translation_id(
         "{artifact_name}:{}:{field}:{source_sha256}:{locale}",
         file_path.to_string_lossy()
     )
+}
+
+fn skill_summary_id(skill_name: &str, source_sha256: &str, locale: &str) -> String {
+    format!("{skill_name}:{source_sha256}:{locale}")
 }
 
 fn status_label(status: &Status) -> String {
@@ -728,6 +864,124 @@ mod tests {
             .clear_translations("skill-a", Path::new("SKILL.md"), "body", "zh")
             .unwrap();
         assert_eq!(deleted_again, 0);
+    }
+
+    #[test]
+    fn upserts_and_reads_skill_summary() {
+        let registry = Registry::in_memory().unwrap();
+        let input = SkillSummaryInput {
+            skill_name: "polish-code".into(),
+            source_sha256: "abc".into(),
+            locale: "en".into(),
+            summary_json: r#"{"commands":["lint"],"capabilities":"Lints code.","useCases":["pre-commit"],"examples":["/lint"]}"#.into(),
+            model: "gpt-4o-mini".into(),
+        };
+        let stored = registry.upsert_skill_summary(&input).unwrap();
+        let fetched = registry
+            .skill_summary("polish-code", "abc", "en")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.id, fetched.id);
+        assert_eq!(fetched.summary_json, input.summary_json);
+        assert_eq!(fetched.model, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn clear_skill_summary_removes_only_matching_skill_locale() {
+        let registry = Registry::in_memory().unwrap();
+        registry
+            .upsert_skill_summary(&SkillSummaryInput {
+                skill_name: "skill-a".into(),
+                source_sha256: "sha1".into(),
+                locale: "en".into(),
+                summary_json: "{}".into(),
+                model: "m".into(),
+            })
+            .unwrap();
+        registry
+            .upsert_skill_summary(&SkillSummaryInput {
+                skill_name: "skill-a".into(),
+                source_sha256: "sha2".into(),
+                locale: "zh".into(),
+                summary_json: "{}".into(),
+                model: "m".into(),
+            })
+            .unwrap();
+        registry
+            .upsert_skill_summary(&SkillSummaryInput {
+                skill_name: "skill-b".into(),
+                source_sha256: "sha3".into(),
+                locale: "en".into(),
+                summary_json: "{}".into(),
+                model: "m".into(),
+            })
+            .unwrap();
+
+        let deleted = registry.clear_skill_summary("skill-a", "en").unwrap();
+        assert_eq!(deleted, 1);
+
+        assert!(registry
+            .skill_summary("skill-a", "sha1", "en")
+            .unwrap()
+            .is_none());
+        assert!(registry
+            .skill_summary("skill-a", "sha2", "zh")
+            .unwrap()
+            .is_some());
+        assert!(registry
+            .skill_summary("skill-b", "sha3", "en")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn upsert_purges_stale_skill_summary_for_same_skill_locale() {
+        let registry = Registry::in_memory().unwrap();
+        registry
+            .upsert_skill_summary(&SkillSummaryInput {
+                skill_name: "polish-code".into(),
+                source_sha256: "old".into(),
+                locale: "en".into(),
+                summary_json: r#"{"capabilities":"old"}"#.into(),
+                model: "m".into(),
+            })
+            .unwrap();
+        // Different locale must survive.
+        registry
+            .upsert_skill_summary(&SkillSummaryInput {
+                skill_name: "polish-code".into(),
+                source_sha256: "old-zh".into(),
+                locale: "zh".into(),
+                summary_json: r#"{"capabilities":"旧"}"#.into(),
+                model: "m".into(),
+            })
+            .unwrap();
+
+        // New source hash for same (name, locale) should evict the old row.
+        registry
+            .upsert_skill_summary(&SkillSummaryInput {
+                skill_name: "polish-code".into(),
+                source_sha256: "new".into(),
+                locale: "en".into(),
+                summary_json: r#"{"capabilities":"new"}"#.into(),
+                model: "m".into(),
+            })
+            .unwrap();
+
+        assert!(registry
+            .skill_summary("polish-code", "old", "en")
+            .unwrap()
+            .is_none());
+        let now = registry
+            .skill_summary("polish-code", "new", "en")
+            .unwrap()
+            .unwrap();
+        assert!(now.summary_json.contains("new"));
+        // Different-locale entry survives.
+        assert!(registry
+            .skill_summary("polish-code", "old-zh", "zh")
+            .unwrap()
+            .is_some());
     }
 
     #[test]

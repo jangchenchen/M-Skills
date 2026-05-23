@@ -13,6 +13,85 @@
   "visibleTo": "可见于：{{tools}}",
   "version": "v{{version}}",
   "body": "内容",
+  "capabilities": "能力",
+  "compatibility": "兼容性",
+  "summary": {
+    "title": "AI 总结",
+    "commands": "包含的指令",
+    "capabilities": "它能做什么",
+    "useCases": "适用场景",
+    "examples": "使用示例",
+    "loading": "正在生成总结…",
+    "empty": "暂无总结。",
+    "failed": "无法生成总结。"
+  },
+  "adaptToCodex": "适配安装到 Codex",
+  "adaptingCodex": "适配中…",
+  "adaptedCodexStatus": "已适配到 Codex",
+  "adaptedCodexCurrent": "Codex 适配版基于当前 Claude Code 版本",
+  "adaptedCodexOld": "Codex 适配版基于旧的 Claude Code 版本",
+  "adaptedCodexName": "适配技能名称：{{name}}",
+  "reviewNewCodexAdaptation": "重新审查新的 Codex 适配版",
+  "forkButton": "Fork 为自定义技能",
+  "editButton": "编辑",
+  "name": "名称",
+  "nameConflict": "已有同名技能位于 {{path}}，请改名后继续。",
+  "adapt": {
+    "title": "审查 Codex 适配版本",
+    "subtitle": "确认差异和兼容性提示；未点击「确认」前不会写入任何文件。",
+    "confirm": "安装适配版本",
+    "confirming": "安装中…"
+  },
+  "fork": {
+    "title": "Fork 为自定义技能",
+    "subtitle": "创建本地自定义技能，不修改原始版本。",
+    "confirm": "继续",
+    "pickTarget": "Fork 安装到哪个工具？"
+  },
+  "edit": {
+    "title": "编辑自定义技能",
+    "saveReview": "审查并保存",
+    "saving": "审查中…"
+  },
+  "rewrite": {
+    "openButton": "AI 改写…",
+    "closeButton": "关闭 AI 改写",
+    "title": "AI 改写",
+    "subtitle": "模型只生成草案，不会自动写盘；需手动「应用草案」后再保存。",
+    "modeLabel": "改写模式",
+    "mode": {
+      "adapt_to_codex": "适配到 Codex",
+      "complete_missing_info": "补全缺失信息",
+      "reduce_risk": "降低风险",
+      "customize_workflow": "自定义工作流",
+      "simplify": "简化"
+    },
+    "instructionLabel": "改写需求",
+    "instructionPlaceholder": "例如：让这个技能可以无人值守地安全运行；把 shell 管道改为「先询问用户」步骤。",
+    "submit": "生成草案",
+    "submitting": "生成中…",
+    "summary": "概要",
+    "notes": "备注",
+    "draftHeader": "草案 SKILL.md",
+    "diffHeader": "与当前编辑器对比的差异",
+    "noChanges": "草案与当前编辑器内容完全一致。",
+    "providedBy": "由 {{providerKind}} / {{model}} 生成。",
+    "applyDraft": "应用草案到编辑器",
+    "discardDraft": "放弃草案",
+    "appliedNote": "草案已应用。请在编辑器中复核后再保存。"
+  },
+  "diff": {
+    "title": "查看原始/适配后原文",
+    "added": "新增",
+    "removed": "删除",
+    "noChanges": "无变化。"
+  },
+  "lineage": {
+    "header": "来源",
+    "adaptedFrom": "适配自",
+    "forkedFrom": "Fork 自",
+    "sha": "源 SHA"
+  },
   "translate": "翻译",
   "retranslate": "重新翻译",
   "translating": "翻译中…",
@@ -25,7 +104,8 @@
     "cached": "已缓存",
     "justTranslated": "刚刚翻译",
     "refreshed": "已重新翻译",
-    "passthrough": "未翻译（直通）"
+    "passthrough": "未翻译（直通）",
+    "fallback": "走了备用模型"
   },
   "validation": {
     "header": "Markdown 结构可能有变化",

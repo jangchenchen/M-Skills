@@ -17,5 +17,13 @@
   "unknown": "未知错误",
   "translateProvider": "翻译服务错误（{{kind}}，状态码 {{status}}）：{{message}}",
   "translateConfig": "翻译配置错误：{{reason}}",
-  "keyring": "钥匙串错误：{{message}}"
+  "keyring": "钥匙串错误：{{message}}",
+  "reviewNotConfigured": "未配置 LLM 评级，已跳过。前往 Settings 配置即可启用。",
+  "reviewParseFailed": "兼容性评级解析失败：{{reason}}",
+  "invalidSkillMarkdown": "SKILL.md 无法解析：{{reason}}",
+  "rewriteNotConfigured": "AI 改写需要配置 LLM 提供商，前往 Settings 配置即可启用。",
+  "rewriteParseFailed": "AI 改写返回的内容无法解析：{{reason}}",
+  "rewriteInvalidMode": "未知的改写模式：{{mode}}",
+  "summarizeNotConfigured": "AI 总结已跳过：前往 Settings 配置 LLM 提供商即可启用。",
+  "summarizeParseFailed": "AI 总结返回的内容无法解析：{{reason}}"
 }

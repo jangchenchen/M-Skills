@@ -3203,8 +3203,10 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "sha2",
  "skillsmgr-core",
  "skillsmgr-fetch",
+ "skillsmgr-parse",
  "skillsmgr-registry",
  "skillsmgr-service",
  "skillsmgr-translate",
@@ -4889,6 +4891,8 @@ dependencies = [
  "skillsmgr-core",
  "tempfile",
  "tokio",
+ "toml 0.8.2",
+ "walkdir",
 ]
 
 [[package]]

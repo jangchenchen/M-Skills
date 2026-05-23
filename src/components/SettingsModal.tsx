@@ -22,6 +22,7 @@ const DEFAULT_CONFIG: TranslateConfigDto = {
   providerKind: "passthrough",
   baseUrl: "https://api.deepseek.com/v1",
   model: "deepseek-chat",
+  fallbackModel: null,
   timeoutMs: 30_000,
   maxRetries: 2,
   apiKeyPresent: false,
@@ -155,6 +156,17 @@ export function SettingsModal({ onClose }: Props) {
                       className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-100"
                       value={config.model}
                       onChange={(e) => update("model", e.target.value)}
+                    />
+                  </Field>
+
+                  <Field label={t("fallbackModel")} hint={t("fallbackModelHint")}>
+                    <input
+                      type="text"
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-100"
+                      value={config.fallbackModel ?? ""}
+                      onChange={(e) =>
+                        update("fallbackModel", e.target.value || null)
+                      }
                     />
                   </Field>
 

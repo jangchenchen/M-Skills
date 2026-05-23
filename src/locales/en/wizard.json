@@ -6,12 +6,56 @@
   "loading": "Loading…",
   "installing": "Installing…",
   "install": "Install",
-  "successMessage": "Installed successfully.",
+  "installAll": "Install ({{count}})",
+  "successMessage": "Installed successfully on every selected platform.",
+  "partialSuccess": "Install finished with some failures.",
   "noArtifact": "No supported artifact found in this source.",
   "commit": "commit: {{sha}}",
   "warnings": "Warnings",
   "artifact": "Artifact",
   "installTarget": "Install target",
+  "installTargets": "Install targets",
   "noTargets": "No compatible targets available.",
-  "files": "{{count}} files"
+  "noCompatibleInstalled": "No compatible AI tool detected on this machine. Install Claude Code, Codex, or opencode first.",
+  "files": "{{count}} files",
+  "skillPreview": "Preview SKILL body",
+  "riskBadge": "Risk",
+  "acknowledge": "I have reviewed the warnings above and understand the risks of installing this skill.",
+  "risk": {
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High"
+  },
+  "severity": {
+    "low": "Low severity",
+    "medium": "Medium severity",
+    "high": "High severity"
+  },
+  "warningKind": {
+    "executableCommand": "Executable command",
+    "mcpConfig": "MCP config",
+    "dangerousShellPattern": "Dangerous shell pattern",
+    "promptInjection": "Prompt injection",
+    "largePayload": "Large payload"
+  },
+  "review": {
+    "title": "AI compatibility review",
+    "loading": "Analyzing compatibility…",
+    "skipped": "LLM review not configured.",
+    "skipNote": "Configure an OpenAI-compatible provider in Settings to enable AI review.",
+    "failed": "Review unavailable",
+    "purpose": "Purpose",
+    "conflictsTitle": "Conflicts ({{count}})",
+    "conflictAcknowledge": "I understand the conflicts above and want to install anyway.",
+    "rating": {
+      "safe": "Safe",
+      "caution": "Caution",
+      "conflict": "Conflict"
+    },
+    "reasonKind": {
+      "overlap": "Overlap",
+      "commandCollision": "Command name collision",
+      "behaviorConflict": "Behavior conflict"
+    }
+  }
 }

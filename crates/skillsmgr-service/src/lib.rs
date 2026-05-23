@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use skillsmgr_adapters::{claude_code, codex, gemini, hermes::HermesAdapter, opencode};
 use skillsmgr_core::{
-    AdapterPresence, Artifact, ArtifactKind, Installation, Result, ScannedInstallation, Scope,
-    SkillsMgrError, Source, SourceProvenance, Target, ToolAdapter,
+    AdapterPresence, Artifact, ArtifactKind, Capability, Installation, Result, ScannedInstallation,
+    Scope, SkillsMgrError, Source, SourceProvenance, Target, ToolAdapter,
 };
 use skillsmgr_fetch::{
     preview_github_import, preview_local_import, ImportCandidate, ImportPreview,
@@ -25,6 +25,7 @@ pub struct ArtifactGroup {
     pub description: String,
     pub body: Option<String>,
     pub version: Option<String>,
+    pub capabilities: Vec<Capability>,
     pub installations: Vec<ScannedInstallation>,
     pub also_visible_to: Vec<String>,
 }
@@ -96,7 +97,7 @@ impl Service {
         path: impl AsRef<Path>,
         scopes: Vec<Scope>,
     ) -> Result<ImportPreview> {
-        preview_local_import(path, &self.available_targets(scopes)).await
+        preview_local_import(path, &self.available_targets(scopes).await).await
     }
 
     pub async fn preview_github_import(
@@ -104,7 +105,7 @@ impl Service {
         url: impl Into<String>,
         scopes: Vec<Scope>,
     ) -> Result<ImportPreview> {
-        preview_github_import(url, &self.available_targets(scopes)).await
+        preview_github_import(url, &self.available_targets(scopes).await).await
     }
 
     pub async fn install(
@@ -177,6 +178,16 @@ impl Service {
         adapter.disable(installation).await
     }
 
+    /// Resolve the on-disk path an install with the given name and target would
+    /// write to, without performing the install. Returns `None` when the
+    /// adapter has no deterministic per-name path (read-only or non-directory
+    /// adapters).
+    pub fn install_path_for(&self, target: &Target, name: &str) -> Option<PathBuf> {
+        let adapter = self.adapter_for_target(target).ok()?;
+        let scope = target.scope()?;
+        adapter.install_path_for(scope, name)
+    }
+
     pub async fn rebuild_registry_for_scopes(&self, scopes: Vec<Scope>) -> Result<()> {
         let Some(registry) = &self.registry else {
             return Ok(());
@@ -189,9 +200,16 @@ impl Service {
         registry.lock().await.upsert_scan_results(&scanned)
     }
 
-    pub fn available_targets(&self, scopes: Vec<Scope>) -> Vec<Target> {
+    /// Targets that this Service can install into right now. An adapter is
+    /// excluded entirely when `detect()` reports `Missing` — we don't want the
+    /// import wizard to offer Claude Code as an install target on a machine
+    /// where `~/.claude` doesn't exist.
+    pub async fn available_targets(&self, scopes: Vec<Scope>) -> Vec<Target> {
         let mut targets = Vec::new();
         for adapter in &self.adapters {
+            if !matches!(adapter.detect().await, AdapterPresence::Available) {
+                continue;
+            }
             for scope in scopes.clone() {
                 for kind in adapter.supported_kinds() {
                     if let Some(target) = target_for_adapter(adapter.id(), scope.clone(), *kind) {
@@ -316,6 +334,7 @@ fn insert_into_group(groups: &mut Vec<ArtifactGroup>, item: ScannedInstallation)
         description: item.artifact.description.clone(),
         body: item.artifact.body.clone(),
         version: item.artifact.version.clone(),
+        capabilities: item.artifact.capabilities.clone(),
         installations: vec![item],
         also_visible_to,
     });
@@ -367,6 +386,9 @@ fn merge_metadata(group: &mut ArtifactGroup, artifact: &Artifact) {
     }
     if group.version.is_none() && artifact.version.is_some() {
         group.version.clone_from(&artifact.version);
+    }
+    if group.capabilities.is_empty() && !artifact.capabilities.is_empty() {
+        group.capabilities = artifact.capabilities.clone();
     }
 }
 
@@ -489,8 +511,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn available_targets_excludes_missing_adapters() {
+        let home = tempdir().unwrap();
+        // Claude Code present; Hermes deliberately absent (no ~/.hermes).
+        fs::create_dir_all(home.path().join(".claude/skills")).unwrap();
+
+        let service = Service::with_home(home.path());
+        let targets = service.available_targets(vec![Scope::Global]).await;
+
+        let tools: Vec<&str> = targets.iter().map(Target::tool_id).collect();
+        assert!(tools.contains(&"claude-code"));
+        assert!(!tools.contains(&"hermes"));
+    }
+
+    #[tokio::test]
     async fn preview_import_filters_targets_from_service_adapters() {
         let home = tempdir().unwrap();
+        // available_targets now filters by adapter presence, so the Claude Code
+        // root must exist for it to be offered.
+        fs::create_dir_all(home.path().join(".claude/skills")).unwrap();
         let source = tempdir().unwrap();
         fs::write(source.path().join("SKILL.md"), "# Demo\n").unwrap();
         let service = Service::with_adapters(vec![

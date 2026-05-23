@@ -315,6 +315,13 @@ impl ToolAdapter for DirectoryLayout {
             }
         }
     }
+
+    fn install_path_for(&self, scope: &Scope, name: &str) -> Option<PathBuf> {
+        if self.read_only {
+            return None;
+        }
+        Some(self.owned_root_for_scope(scope).join(name))
+    }
 }
 
 impl DirectoryLayout {

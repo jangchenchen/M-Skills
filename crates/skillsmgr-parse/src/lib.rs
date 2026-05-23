@@ -1,7 +1,8 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use skillsmgr_core::{Artifact, ArtifactKind, Result, SkillsMgrError, Source};
+use skillsmgr_core::{Artifact, ArtifactKind, Capability, Result, SkillsMgrError, Source};
 use tokio::fs;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,16 +12,16 @@ pub struct ArtifactCandidate {
 }
 
 #[derive(Debug, Deserialize)]
-struct SkillFrontmatter {
-    name: Option<String>,
-    description: Option<String>,
-    version: Option<String>,
+pub struct SkillFrontmatter {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub version: Option<String>,
 }
 
 #[derive(Debug)]
-struct ParsedSkillMarkdown {
-    frontmatter: SkillFrontmatter,
-    body: Option<String>,
+pub struct ParsedSkillMarkdown {
+    pub frontmatter: SkillFrontmatter,
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,6 +29,20 @@ struct GeminiExtensionManifest {
     name: Option<String>,
     description: Option<String>,
     version: Option<String>,
+    #[serde(default)]
+    commands: Option<BTreeMap<String, GeminiManifestCommand>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiManifestCommand {
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiCommandToml {
+    #[serde(default)]
+    description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +131,20 @@ pub async fn parse_gemini_extension_dir(root: impl AsRef<Path>) -> Result<Artifa
         .and_then(|name| name.to_str())
         .unwrap_or("gemini-extension")
         .to_string();
+
+    let mut capabilities = Vec::new();
+    if let Some(manifest_commands) = &manifest.commands {
+        for (name, command) in manifest_commands {
+            capabilities.push(Capability {
+                name: name.clone(),
+                description: command.description.clone().unwrap_or_default(),
+            });
+        }
+    }
+    capabilities.extend(read_gemini_command_dir(root)?);
+    capabilities.sort_by(|a, b| a.name.cmp(&b.name));
+    capabilities.dedup_by(|a, b| a.name == b.name);
+
     let artifact = Artifact::new(
         manifest.name.unwrap_or(fallback_name),
         manifest.description.unwrap_or_default(),
@@ -124,12 +153,44 @@ pub async fn parse_gemini_extension_dir(root: impl AsRef<Path>) -> Result<Artifa
         Source::Local {
             path: root.to_path_buf(),
         },
-    );
+    )
+    .with_capabilities(capabilities);
 
     Ok(ArtifactCandidate {
         artifact,
         root: root.to_path_buf(),
     })
+}
+
+fn read_gemini_command_dir(extension_root: &Path) -> Result<Vec<Capability>> {
+    let commands_dir = extension_root.join("commands");
+    if !commands_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut capabilities = Vec::new();
+    for entry in walkdir::WalkDir::new(&commands_dir).into_iter().flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(&commands_dir) else {
+            continue;
+        };
+        let stem = relative.with_extension("");
+        let name = stem
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, ":");
+        let content = std::fs::read_to_string(path).map_err(|source| fs_error(path, source))?;
+        let description = toml::from_str::<GeminiCommandToml>(&content)
+            .ok()
+            .and_then(|parsed| parsed.description)
+            .unwrap_or_default();
+        capabilities.push(Capability { name, description });
+    }
+    Ok(capabilities)
 }
 
 pub async fn parse_warp_workflow_file(path: impl AsRef<Path>) -> Result<ArtifactCandidate> {
@@ -185,6 +246,10 @@ fn parse_skill_markdown(content: &str, path: &Path) -> Result<ParsedSkillMarkdow
         frontmatter,
         body: non_empty_body(body.strip_prefix('\n').unwrap_or(body)),
     })
+}
+
+pub fn parse_skill_markdown_str(content: &str) -> Result<ParsedSkillMarkdown> {
+    parse_skill_markdown(content, Path::new("SKILL.md"))
 }
 
 fn non_empty_body(body: &str) -> Option<String> {
@@ -279,6 +344,112 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].artifact.kind, ArtifactKind::Extension);
         assert_eq!(candidates[0].artifact.name, "review-ext");
+        assert!(candidates[0].artifact.capabilities.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gemini_manifest_commands_become_capabilities() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("gemini-extension.json"),
+            r#"{
+                "name": "data-ext",
+                "commands": {
+                    "analyze": {"description": "Run data analysis"},
+                    "summarize": {"description": "Summarize dataset"}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let candidates = sniff_artifacts(dir.path()).await.unwrap();
+        let caps = &candidates[0].artifact.capabilities;
+
+        assert_eq!(caps.len(), 2);
+        assert_eq!(caps[0].name, "analyze");
+        assert_eq!(caps[0].description, "Run data analysis");
+        assert_eq!(caps[1].name, "summarize");
+        assert_eq!(caps[1].description, "Summarize dataset");
+    }
+
+    #[tokio::test]
+    async fn gemini_commands_subdir_toml_files_become_capabilities() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("gemini-extension.json"),
+            r#"{"name":"ops-ext"}"#,
+        )
+        .unwrap();
+        let commands_dir = dir.path().join("commands");
+        fs::create_dir_all(commands_dir.join("gcs")).unwrap();
+        fs::write(
+            commands_dir.join("deploy.toml"),
+            "description = \"Deploy the service\"\nprompt = \"...\"\n",
+        )
+        .unwrap();
+        fs::write(
+            commands_dir.join("gcs").join("sync.toml"),
+            "description = \"Sync GCS bucket\"\nprompt = \"...\"\n",
+        )
+        .unwrap();
+
+        let candidates = sniff_artifacts(dir.path()).await.unwrap();
+        let caps = &candidates[0].artifact.capabilities;
+
+        assert_eq!(caps.len(), 2);
+        assert_eq!(caps[0].name, "deploy");
+        assert_eq!(caps[0].description, "Deploy the service");
+        assert_eq!(caps[1].name, "gcs:sync");
+        assert_eq!(caps[1].description, "Sync GCS bucket");
+    }
+
+    #[tokio::test]
+    async fn gemini_manifest_and_subdir_capabilities_merge_sorted_deduped() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("gemini-extension.json"),
+            r#"{
+                "name": "mixed-ext",
+                "commands": {
+                    "analyze": {"description": "From manifest"},
+                    "zeta": {"description": "Last alphabetically"}
+                }
+            }"#,
+        )
+        .unwrap();
+        let commands_dir = dir.path().join("commands");
+        fs::create_dir_all(&commands_dir).unwrap();
+        fs::write(
+            commands_dir.join("analyze.toml"),
+            "description = \"From toml (should be deduped)\"\nprompt = \"x\"\n",
+        )
+        .unwrap();
+        fs::write(
+            commands_dir.join("build.toml"),
+            "description = \"Only in subdir\"\nprompt = \"x\"\n",
+        )
+        .unwrap();
+
+        let candidates = sniff_artifacts(dir.path()).await.unwrap();
+        let caps = &candidates[0].artifact.capabilities;
+
+        let names: Vec<&str> = caps.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["analyze", "build", "zeta"]);
+        let analyze = caps.iter().find(|c| c.name == "analyze").unwrap();
+        assert_eq!(analyze.description, "From manifest");
+    }
+
+    #[tokio::test]
+    async fn gemini_extension_without_commands_has_empty_capabilities() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("gemini-extension.json"),
+            r#"{"name":"plain"}"#,
+        )
+        .unwrap();
+
+        let candidates = sniff_artifacts(dir.path()).await.unwrap();
+        assert!(candidates[0].artifact.capabilities.is_empty());
     }
 
     #[tokio::test]

@@ -4,15 +4,19 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use skillsmgr_core::{
-    AdapterPresence, Artifact, ArtifactKind, Installation, ScannedInstallation, Scope,
+    AdapterPresence, Artifact, ArtifactKind, Capability, Installation, ScannedInstallation, Scope,
     SkillsMgrError, Source, SourceProvenance, Status, Target,
 };
 use skillsmgr_fetch::{
-    AuditFile, AuditMetadata, AuditWarning, AuditWarningKind, ImportAudit, ImportPreview,
-    ImportSource,
+    AuditFile, AuditMetadata, AuditSeverity, AuditWarning, AuditWarningKind, ImportAudit,
+    ImportPreview, ImportSource,
 };
 use skillsmgr_service::{AdapterStatus, ArtifactGroup, Inventory};
-use skillsmgr_translate::{ProviderKind, TranslateConfig, TranslateOutcome, TranslationValidation};
+use skillsmgr_translate::{
+    ProviderKind, RegistrySkillSummary, TranslateConfig, TranslateOutcome, TranslationValidation,
+};
+
+use crate::compatibility::{CompatibilityReview, CompatibilityRiskLevel, CompatibilityStatus};
 
 // ── Error ─────────────────────────────────────────────────────────────────────
 
@@ -126,6 +130,164 @@ impl From<SkillsMgrError> for ErrorDto {
     }
 }
 
+// ── Skill draft (Issue 007 Batch 2) ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LineageDto {
+    /// "fork" or "adaptation".
+    pub source_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_url: Option<String>,
+    pub source_hash: String,
+    pub parent_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NameConflictDto {
+    pub existing_path: String,
+    pub target_tool: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillDraftPreviewDto {
+    pub original_name: String,
+    pub original_content: String,
+    pub adapted_name: String,
+    pub adapted_description: String,
+    pub adapted_version: Option<String>,
+    pub adapted_content: String,
+    pub target: TargetDto,
+    pub lineage: LineageDto,
+    pub compatibility_reviews: Vec<CompatibilityReviewDto>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name_conflict: Option<NameConflictDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkPreviewRequestDto {
+    pub artifact: ArtifactDto,
+    pub target: TargetDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveCustomSkillEditRequestDto {
+    pub content: String,
+    pub target: TargetDto,
+    pub lineage: LineageDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmDraftInstallRequestDto {
+    pub name: String,
+    pub description: String,
+    pub version: Option<String>,
+    pub content: String,
+    pub target: TargetDto,
+    pub lineage: LineageDto,
+}
+
+// ── LLM rewrite (Issue 007 Batch 3) ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriteSkillRequestDto {
+    pub artifact: ArtifactDto,
+    /// One of `RewriteMode::as_id()`.
+    pub mode: String,
+    pub user_instruction: String,
+    pub locale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriteSkillOutcomeDto {
+    pub draft_body: String,
+    pub summary: String,
+    pub notes: Vec<String>,
+    pub provider_kind: String,
+    pub model: String,
+    pub compatibility_reviews: Vec<CompatibilityReviewDto>,
+}
+
+// ── AI skill summary (auto-generated post-install) ───────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSummaryRequestDto {
+    pub artifact: ArtifactDto,
+    pub locale: String,
+    #[serde(default)]
+    pub force_refresh: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSummaryDto {
+    pub commands: Vec<String>,
+    pub capabilities: String,
+    pub use_cases: Vec<String>,
+    pub examples: Vec<String>,
+    pub locale: String,
+    pub provider_kind: String,
+    pub model: String,
+    pub generated_at: String,
+    /// "hit" when served from the registry cache, "miss" when freshly generated.
+    pub cache_status: String,
+}
+
+impl SkillSummaryDto {
+    pub fn from_record(
+        record: &RegistrySkillSummary,
+        provider_kind: &str,
+        cache_status: &str,
+    ) -> std::result::Result<Self, ErrorDto> {
+        let outcome: crate::summary::SkillSummaryOutcome =
+            serde_json::from_str(&record.summary_json).map_err(|e| ErrorDto {
+                code: "summarizeParseFailed".into(),
+                params: [("reason".into(), e.to_string())].into(),
+            })?;
+        Ok(SkillSummaryDto::from_parts(
+            &outcome,
+            &record.locale,
+            provider_kind,
+            &record.model,
+            &record.generated_at.to_rfc3339(),
+            cache_status,
+        ))
+    }
+
+    pub fn from_parts(
+        outcome: &crate::summary::SkillSummaryOutcome,
+        locale: &str,
+        provider_kind: &str,
+        model: &str,
+        generated_at: &str,
+        cache_status: &str,
+    ) -> Self {
+        SkillSummaryDto {
+            commands: outcome.commands.clone(),
+            capabilities: outcome.capabilities.clone(),
+            use_cases: outcome.use_cases.clone(),
+            examples: outcome.examples.clone(),
+            locale: locale.to_string(),
+            provider_kind: provider_kind.to_string(),
+            model: model.to_string(),
+            generated_at: generated_at.to_string(),
+            cache_status: cache_status.to_string(),
+        }
+    }
+}
+
 // ── Inventory ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,8 +306,16 @@ pub struct ArtifactGroupDto {
     pub description: String,
     pub body: Option<String>,
     pub version: Option<String>,
+    pub capabilities: Vec<CapabilityDto>,
     pub installations: Vec<ScannedInstallationDto>,
     pub also_visible_to: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityDto {
+    pub name: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,6 +336,9 @@ pub struct ArtifactDto {
     pub version: Option<String>,
     pub kind: String,
     pub source: SourceDto,
+    pub capabilities: Vec<CapabilityDto>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub lineage: Option<LineageDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,6 +414,34 @@ pub struct ImportCandidateDto {
     pub index: usize,
     pub artifact: ArtifactDto,
     pub compatible_targets: Vec<TargetDto>,
+    pub compatibility_reviews: Vec<CompatibilityReviewDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompatibilityReviewDto {
+    pub target: TargetDto,
+    pub status: CompatibilityStatusDto,
+    pub risk_level: CompatibilityRiskLevelDto,
+    pub summary: String,
+    pub reasons: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CompatibilityStatusDto {
+    Compatible,
+    Warning,
+    Incompatible,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum CompatibilityRiskLevelDto {
+    Low,
+    Medium,
+    High,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,6 +450,25 @@ pub struct ImportAuditDto {
     pub files: Vec<AuditFileDto>,
     pub metadata: Vec<AuditMetadataDto>,
     pub warnings: Vec<AuditWarningDto>,
+    pub risk_level: AuditSeverityDto,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AuditSeverityDto {
+    Low,
+    Medium,
+    High,
+}
+
+impl From<AuditSeverity> for AuditSeverityDto {
+    fn from(s: AuditSeverity) -> Self {
+        match s {
+            AuditSeverity::Low => AuditSeverityDto::Low,
+            AuditSeverity::Medium => AuditSeverityDto::Medium,
+            AuditSeverity::High => AuditSeverityDto::High,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,7 +490,70 @@ pub struct AuditMetadataDto {
 pub struct AuditWarningDto {
     pub path: String,
     pub kind: String,
+    pub severity: AuditSeverityDto,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallOutcomeDto {
+    pub target: TargetDto,
+    pub ok: bool,
+    pub installation: Option<InstallationDto>,
+    pub error: Option<ErrorDto>,
+}
+
+// ── Review ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ReviewRatingDto {
+    Safe,
+    Caution,
+    Conflict,
+}
+
+impl From<crate::review::ReviewRating> for ReviewRatingDto {
+    fn from(r: crate::review::ReviewRating) -> Self {
+        match r {
+            crate::review::ReviewRating::Safe => ReviewRatingDto::Safe,
+            crate::review::ReviewRating::Caution => ReviewRatingDto::Caution,
+            crate::review::ReviewRating::Conflict => ReviewRatingDto::Conflict,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewConflictDto {
+    pub name: String,
+    pub kind: String,
+    pub tool: String,
+    pub reason_kind: String,
+    pub reason: String,
+}
+
+impl From<crate::review::ReviewConflict> for ReviewConflictDto {
+    fn from(c: crate::review::ReviewConflict) -> Self {
+        ReviewConflictDto {
+            name: c.name,
+            kind: c.kind,
+            tool: c.tool,
+            reason_kind: c.reason_kind,
+            reason: c.reason,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewOutcomeDto {
+    pub rating: ReviewRatingDto,
+    pub summary: String,
+    pub skill_purpose: String,
+    pub conflicts: Vec<ReviewConflictDto>,
+    pub provider_kind: String,
+    pub model: String,
 }
 
 // ── From impls (domain → DTO) ─────────────────────────────────────────────────
@@ -297,12 +580,22 @@ impl From<&ArtifactGroup> for ArtifactGroupDto {
             description: g.description.clone(),
             body: g.body.clone(),
             version: g.version.clone(),
+            capabilities: g.capabilities.iter().map(CapabilityDto::from).collect(),
             installations: g
                 .installations
                 .iter()
                 .map(ScannedInstallationDto::from)
                 .collect(),
             also_visible_to: g.also_visible_to.clone(),
+        }
+    }
+}
+
+impl From<&Capability> for CapabilityDto {
+    fn from(c: &Capability) -> Self {
+        CapabilityDto {
+            name: c.name.clone(),
+            description: c.description.clone(),
         }
     }
 }
@@ -322,6 +615,7 @@ impl From<&ScannedInstallation> for ScannedInstallationDto {
 
 impl From<&Artifact> for ArtifactDto {
     fn from(a: &Artifact) -> Self {
+        let lineage = read_lineage_sidecar(&a.source);
         ArtifactDto {
             id: a.id.to_string(),
             name: a.name.clone(),
@@ -330,8 +624,19 @@ impl From<&Artifact> for ArtifactDto {
             version: a.version.clone(),
             kind: kind_str(a.kind),
             source: SourceDto::from(&a.source),
+            capabilities: a.capabilities.iter().map(CapabilityDto::from).collect(),
+            lineage,
         }
     }
+}
+
+fn read_lineage_sidecar(source: &Source) -> Option<LineageDto> {
+    let Source::Local { path } = source else {
+        return None;
+    };
+    let sidecar = path.join(".m-skills.json");
+    let bytes = std::fs::read(&sidecar).ok()?;
+    serde_json::from_slice::<LineageDto>(&bytes).ok()
 }
 
 impl From<&Source> for SourceDto {
@@ -430,6 +735,13 @@ impl From<&ImportPreview> for ImportPreviewDto {
                     index: i,
                     artifact: ArtifactDto::from(&c.artifact),
                     compatible_targets: c.compatible_targets.iter().map(TargetDto::from).collect(),
+                    compatibility_reviews: crate::compatibility::review_for_targets(
+                        &c.artifact,
+                        &review_targets(),
+                    )
+                    .iter()
+                    .map(CompatibilityReviewDto::from)
+                    .collect(),
                 })
                 .collect(),
             audit: ImportAuditDto::from(&p.audit),
@@ -454,6 +766,7 @@ impl From<&ImportAudit> for ImportAuditDto {
             files: a.files.iter().map(AuditFileDto::from).collect(),
             metadata: a.metadata.iter().map(AuditMetadataDto::from).collect(),
             warnings: a.warnings.iter().map(AuditWarningDto::from).collect(),
+            risk_level: a.risk_level.into(),
         }
     }
 }
@@ -483,10 +796,61 @@ impl From<&AuditWarning> for AuditWarningDto {
             kind: match w.kind {
                 AuditWarningKind::ExecutableCommand => "ExecutableCommand".to_string(),
                 AuditWarningKind::McpConfig => "McpConfig".to_string(),
+                AuditWarningKind::DangerousShellPattern => "DangerousShellPattern".to_string(),
+                AuditWarningKind::PromptInjection => "PromptInjection".to_string(),
+                AuditWarningKind::LargePayload => "LargePayload".to_string(),
             },
+            severity: w.severity.into(),
             message: w.message.clone(),
         }
     }
+}
+
+impl From<&CompatibilityReview> for CompatibilityReviewDto {
+    fn from(r: &CompatibilityReview) -> Self {
+        CompatibilityReviewDto {
+            target: TargetDto::from(&r.target),
+            status: r.status.into(),
+            risk_level: r.risk_level.into(),
+            summary: r.summary.clone(),
+            reasons: r.reasons.clone(),
+            warnings: r.warnings.clone(),
+        }
+    }
+}
+
+impl From<CompatibilityStatus> for CompatibilityStatusDto {
+    fn from(s: CompatibilityStatus) -> Self {
+        match s {
+            CompatibilityStatus::Compatible => CompatibilityStatusDto::Compatible,
+            CompatibilityStatus::Warning => CompatibilityStatusDto::Warning,
+            CompatibilityStatus::Incompatible => CompatibilityStatusDto::Incompatible,
+        }
+    }
+}
+
+impl From<CompatibilityRiskLevel> for CompatibilityRiskLevelDto {
+    fn from(r: CompatibilityRiskLevel) -> Self {
+        match r {
+            CompatibilityRiskLevel::Low => CompatibilityRiskLevelDto::Low,
+            CompatibilityRiskLevel::Medium => CompatibilityRiskLevelDto::Medium,
+            CompatibilityRiskLevel::High => CompatibilityRiskLevelDto::High,
+        }
+    }
+}
+
+fn review_targets() -> Vec<Target> {
+    vec![
+        Target::ClaudeCode {
+            scope: Scope::Global,
+        },
+        Target::Codex {
+            scope: Scope::Global,
+        },
+        Target::Gemini {
+            scope: Scope::Global,
+        },
+    ]
 }
 
 // ── Translate config ─────────────────────────────────────────────────────────
@@ -500,6 +864,7 @@ pub struct TranslateOutcomeDto {
     pub source_sha256: String,
     pub cache_status: String,
     pub provider_kind: String,
+    pub used_fallback: bool,
     pub validation: TranslationValidation,
 }
 
@@ -512,6 +877,7 @@ impl From<TranslateOutcome> for TranslateOutcomeDto {
             source_sha256: outcome.source_sha256,
             cache_status: outcome.cache_status.as_id().to_string(),
             provider_kind: outcome.provider_kind.to_string(),
+            used_fallback: outcome.used_fallback,
             validation: outcome.validation,
         }
     }
@@ -523,6 +889,7 @@ pub struct TranslateConfigDto {
     pub provider_kind: String,
     pub base_url: String,
     pub model: String,
+    pub fallback_model: Option<String>,
     pub timeout_ms: u64,
     pub max_retries: u32,
     pub api_key_present: bool,
@@ -534,6 +901,7 @@ impl TranslateConfigDto {
             provider_kind: config.provider_kind.as_id().to_string(),
             base_url: config.base_url.clone(),
             model: config.model.clone(),
+            fallback_model: config.fallback_model.clone(),
             timeout_ms: config.timeout_ms,
             max_retries: config.max_retries,
             api_key_present,
@@ -555,6 +923,11 @@ impl TranslateConfigDto {
             provider_kind,
             base_url: self.base_url.clone(),
             model: self.model.clone(),
+            fallback_model: self
+                .fallback_model
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             timeout_ms: self.timeout_ms,
             max_retries: self.max_retries,
         })

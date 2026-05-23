@@ -27,10 +27,12 @@ skillsmgr-core = { path = "../crates/skillsmgr-core" }
 skillsmgr-fetch = { path = "../crates/skillsmgr-fetch" }
 skillsmgr-registry = { path = "../crates/skillsmgr-registry" }
 skillsmgr-translate = { path = "../crates/skillsmgr-translate" }
+skillsmgr-parse = { path = "../crates/skillsmgr-parse" }
 uuid = { version = "1", features = ["serde", "v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
-tempfile = { workspace = true }
 tauri-utils = "2.9.1"

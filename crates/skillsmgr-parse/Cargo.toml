@@ -11,6 +11,8 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 skillsmgr-core = { path = "../skillsmgr-core" }
 tokio.workspace = true
+toml = "0.8"
+walkdir.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -26,6 +26,8 @@ pub struct TranslateConfig {
     pub base_url: String,
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default)]
+    pub fallback_model: Option<String>,
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
     #[serde(default = "default_max_retries")]
@@ -54,6 +56,7 @@ impl Default for TranslateConfig {
             provider_kind: ProviderKind::Passthrough,
             base_url: default_base_url(),
             model: default_model(),
+            fallback_model: None,
             timeout_ms: default_timeout_ms(),
             max_retries: default_max_retries(),
         }
@@ -112,6 +115,7 @@ mod tests {
             provider_kind: ProviderKind::OpenAiCompat,
             base_url: "https://example.com/v1".into(),
             model: "test-model".into(),
+            fallback_model: Some("fallback-model".into()),
             timeout_ms: 10_000,
             max_retries: 5,
         };
@@ -120,8 +124,26 @@ mod tests {
         assert_eq!(loaded.provider_kind, ProviderKind::OpenAiCompat);
         assert_eq!(loaded.base_url, "https://example.com/v1");
         assert_eq!(loaded.model, "test-model");
+        assert_eq!(loaded.fallback_model.as_deref(), Some("fallback-model"));
         assert_eq!(loaded.timeout_ms, 10_000);
         assert_eq!(loaded.max_retries, 5);
+    }
+
+    #[test]
+    fn old_config_without_fallback_model_loads_with_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("translate.toml");
+        std::fs::write(
+            &path,
+            "provider_kind = \"passthrough\"\n\
+             base_url = \"https://example.com/v1\"\n\
+             model = \"test-model\"\n\
+             timeout_ms = 10000\n\
+             max_retries = 2\n",
+        )
+        .unwrap();
+        let loaded = TranslateConfig::load(&path).unwrap();
+        assert!(loaded.fallback_model.is_none());
     }
 
     #[test]

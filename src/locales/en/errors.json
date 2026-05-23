@@ -17,5 +17,13 @@
   "unknown": "Unknown error",
   "translateProvider": "Translation provider error ({{kind}}, status {{status}}): {{message}}",
   "translateConfig": "Translation config error: {{reason}}",
-  "keyring": "Keychain error: {{message}}"
+  "keyring": "Keychain error: {{message}}",
+  "reviewNotConfigured": "Compatibility review skipped: configure an LLM provider in Settings to enable.",
+  "reviewParseFailed": "Compatibility review failed to parse model output: {{reason}}",
+  "invalidSkillMarkdown": "Invalid SKILL.md: {{reason}}",
+  "rewriteNotConfigured": "AI rewrite needs an LLM provider — configure one in Settings to enable.",
+  "rewriteParseFailed": "AI rewrite returned an unparseable response: {{reason}}",
+  "rewriteInvalidMode": "Unknown rewrite mode: {{mode}}",
+  "summarizeNotConfigured": "AI summary skipped: configure an LLM provider in Settings to enable.",
+  "summarizeParseFailed": "AI summary returned an unparseable response: {{reason}}"
 }

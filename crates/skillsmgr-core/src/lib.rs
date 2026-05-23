@@ -143,6 +143,18 @@ pub enum Source {
     Unknown,
 }
 
+/// Kind-specific sub-item of an `Artifact`.
+///
+/// Currently only populated for `ArtifactKind::Extension` (Gemini commands).
+/// See CLAUDE.md "Inventory Information Architecture" — capability extraction
+/// is kind-specific. New `ArtifactKind` variants must not default to populating
+/// this field; re-read that section before reusing it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capability {
+    pub name: String,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Artifact {
     pub id: Uuid,
@@ -152,6 +164,10 @@ pub struct Artifact {
     pub version: Option<String>,
     pub kind: ArtifactKind,
     pub source: Source,
+    /// Kind-specific. Only `ArtifactKind::Extension` populates this today;
+    /// other kinds must leave it empty. See CLAUDE.md "Inventory Information
+    /// Architecture".
+    pub capabilities: Vec<Capability>,
 }
 
 impl Artifact {
@@ -170,11 +186,17 @@ impl Artifact {
             version,
             kind,
             source,
+            capabilities: Vec::new(),
         }
     }
 
     pub fn with_body(mut self, body: Option<String>) -> Self {
         self.body = body;
+        self
+    }
+
+    pub fn with_capabilities(mut self, capabilities: Vec<Capability>) -> Self {
+        self.capabilities = capabilities;
         self
     }
 }
@@ -247,6 +269,14 @@ pub trait ToolAdapter: Send + Sync {
     async fn disable(&self, installation: &Installation) -> Result<()>;
 
     async fn detect(&self) -> AdapterPresence;
+
+    /// Resolve the on-disk path an `install(name, scope)` would write to,
+    /// without performing the install. Used for pre-flight conflict detection.
+    /// Adapters without a deterministic per-name path (read-only adapters,
+    /// shared-only adapters) return `None`.
+    fn install_path_for(&self, _scope: &Scope, _name: &str) -> Option<PathBuf> {
+        None
+    }
 }
 
 pub fn ensure_target_supports_kind(target: &Target, kind: ArtifactKind) -> Result<()> {

@@ -7,6 +7,8 @@
   "baseUrl": "Base URL",
   "baseUrlHint": "e.g. https://api.deepseek.com/v1 or https://yunwu.ai/v1",
   "model": "Model",
+  "fallbackModel": "Fallback model",
+  "fallbackModelHint": "Used when the primary model returns an error (4xx/5xx/network/empty content). Leave blank to disable.",
   "apiKey": "API Key",
   "apiKeyPlaceholderSet": "•••••••• (stored in Keychain — leave blank to keep)",
   "apiKeyPlaceholderEmpty": "Paste API key",

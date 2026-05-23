@@ -143,15 +143,11 @@ impl OpenAICompatProvider {
             AttemptOutcome::Done(Err(err))
         }
     }
-}
 
-#[async_trait]
-impl TranslationProvider for OpenAICompatProvider {
-    async fn translate(&self, request: &TranslationRequest) -> Result<String> {
-        let body = self.build_body(request);
+    async fn run_with_retries(&self, body: &ChatRequest) -> Result<String> {
         let mut last_err: Option<SkillsMgrError> = None;
         for attempt in 0..=self.max_retries {
-            match self.attempt(&body).await {
+            match self.attempt(body).await {
                 AttemptOutcome::Done(result) => return result,
                 AttemptOutcome::Retryable(err) => {
                     last_err = Some(err);
@@ -169,6 +165,33 @@ impl TranslationProvider for OpenAICompatProvider {
                 message: "unknown failure".into(),
             }),
         )
+    }
+
+    /// General-purpose chat completion. Used by callers outside the translation
+    /// pipeline (e.g. import-time compatibility review) that want the same
+    /// retry / HTML-detection / empty-response handling without a `TranslationRequest`.
+    pub async fn chat_complete(
+        &self,
+        messages: Vec<(String, String)>,
+        temperature: f32,
+    ) -> Result<String> {
+        let body = ChatRequest {
+            model: self.model.clone(),
+            temperature,
+            messages: messages
+                .into_iter()
+                .map(|(role, content)| ChatMessage { role, content })
+                .collect(),
+        };
+        self.run_with_retries(&body).await
+    }
+}
+
+#[async_trait]
+impl TranslationProvider for OpenAICompatProvider {
+    async fn translate(&self, request: &TranslationRequest) -> Result<String> {
+        let body = self.build_body(request);
+        self.run_with_retries(&body).await
     }
 
     fn kind(&self) -> &'static str {
@@ -200,13 +223,16 @@ fn decode_chat_completion_text(body: &str) -> std::result::Result<String, String
             format!("invalid JSON response: {e}")
         }
     })?;
-    extract_chat_completion_text(&value).ok_or_else(|| {
-        if let Some(refusal) = extract_chat_completion_refusal(&value) {
-            format!("provider refusal: {refusal}")
-        } else {
-            "response had no translated text".into()
+    match extract_chat_completion_text(&value) {
+        Some(text) if !text.trim().is_empty() => Ok(text),
+        _ => {
+            if let Some(refusal) = extract_chat_completion_refusal(&value) {
+                Err(format!("provider refusal: {refusal}"))
+            } else {
+                Err("response had no translated text".into())
+            }
         }
-    })
+    }
 }
 
 fn looks_like_html(body: &str) -> bool {
@@ -252,11 +278,17 @@ fn extract_choice_text(choice: &Value) -> Option<String> {
 }
 
 fn extract_message_text(message: &Value) -> Option<String> {
-    message
-        .get("content")
-        .and_then(extract_content_text)
-        .or_else(|| message.get("text").and_then(extract_text_value))
-        .or_else(|| message.get("output_text").and_then(extract_text_value))
+    [
+        message.get("content").and_then(extract_content_text),
+        message.get("text").and_then(extract_text_value),
+        message.get("output_text").and_then(extract_text_value),
+        message
+            .get("reasoning_content")
+            .and_then(extract_text_value),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|text| !text.trim().is_empty())
 }
 
 fn extract_content_text(value: &Value) -> Option<String> {
@@ -279,7 +311,8 @@ fn extract_content_text(value: &Value) -> Option<String> {
             .get("text")
             .and_then(extract_text_value)
             .or_else(|| value.get("content").and_then(extract_text_value))
-            .or_else(|| value.get("value").and_then(extract_text_value)),
+            .or_else(|| value.get("value").and_then(extract_text_value))
+            .or_else(|| value.get("output_text").and_then(extract_text_value)),
         _ => None,
     }
 }
@@ -291,7 +324,8 @@ fn extract_content_part_text(value: &Value) -> Option<String> {
             .get("text")
             .and_then(extract_text_value)
             .or_else(|| value.get("content").and_then(extract_text_value))
-            .or_else(|| value.get("value").and_then(extract_text_value)),
+            .or_else(|| value.get("value").and_then(extract_text_value))
+            .or_else(|| value.get("output_text").and_then(extract_text_value)),
         _ => None,
     }
 }
@@ -364,6 +398,52 @@ mod tests {
         .to_string();
 
         assert_eq!(decode_chat_completion_text(&body).unwrap(), "你好");
+    }
+
+    #[test]
+    fn decode_response_accepts_reasoning_content_fallback() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "你好"
+                }
+            }]
+        })
+        .to_string();
+
+        assert_eq!(decode_chat_completion_text(&body).unwrap(), "你好");
+    }
+
+    #[test]
+    fn decode_response_accepts_nested_output_text_part() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": [{"type": "output_text", "output_text": "你好"}]
+                }
+            }]
+        })
+        .to_string();
+
+        assert_eq!(decode_chat_completion_text(&body).unwrap(), "你好");
+    }
+
+    #[test]
+    fn decode_response_rejects_empty_success_content() {
+        let body = ok_body("").to_string();
+        let err = decode_chat_completion_text(&body).unwrap_err();
+
+        assert_eq!(err, "response had no translated text");
+    }
+
+    #[test]
+    fn decode_response_rejects_whitespace_success_content() {
+        let body = ok_body("  \n\t").to_string();
+        let err = decode_chat_completion_text(&body).unwrap_err();
+
+        assert_eq!(err, "response had no translated text");
     }
 
     #[test]
@@ -528,6 +608,102 @@ mod tests {
         match err {
             SkillsMgrError::TranslateProvider { status, .. } => {
                 assert_eq!(status, Some(401));
+            }
+            other => panic!("expected TranslateProvider, got {other:?}"),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn chat_complete_returns_assistant_text() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ok_body("{\"rating\":\"safe\"}")),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = OpenAICompatProvider::new(
+            server.uri(),
+            "test-model".into(),
+            "test-key".into(),
+            Duration::from_secs(5),
+            0,
+        )
+        .unwrap();
+        let text = provider
+            .chat_complete(
+                vec![
+                    ("system".into(), "You judge things.".into()),
+                    ("user".into(), "Judge this.".into()),
+                ],
+                0.1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "{\"rating\":\"safe\"}");
+    }
+
+    #[tokio::test]
+    async fn chat_complete_retries_5xx_then_succeeds() {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(CountingResponder {
+                calls: calls.clone(),
+                fail_first: 1,
+                translated: "ok".into(),
+            })
+            .mount(&server)
+            .await;
+
+        let provider = OpenAICompatProvider::new(
+            server.uri(),
+            "test-model".into(),
+            "test-key".into(),
+            Duration::from_secs(5),
+            2,
+        )
+        .unwrap();
+        let text = provider
+            .chat_complete(vec![("user".into(), "hi".into())], 0.0)
+            .await
+            .unwrap();
+        assert_eq!(text, "ok");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn chat_complete_propagates_4xx_without_retry() {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(AlwaysStatus {
+                calls: calls.clone(),
+                status: 400,
+            })
+            .mount(&server)
+            .await;
+
+        let provider = OpenAICompatProvider::new(
+            server.uri(),
+            "test-model".into(),
+            "test-key".into(),
+            Duration::from_secs(5),
+            3,
+        )
+        .unwrap();
+        let err = provider
+            .chat_complete(vec![("user".into(), "hi".into())], 0.0)
+            .await
+            .unwrap_err();
+        match err {
+            SkillsMgrError::TranslateProvider { status, .. } => {
+                assert_eq!(status, Some(400));
             }
             other => panic!("expected TranslateProvider, got {other:?}"),
         }

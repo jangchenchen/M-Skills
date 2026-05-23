@@ -6,12 +6,56 @@
   "loading": "加载中…",
   "installing": "安装中…",
   "install": "安装",
-  "successMessage": "安装成功。",
+  "installAll": "安装 ({{count}})",
+  "successMessage": "已成功安装到全部选中平台。",
+  "partialSuccess": "安装完成，但有部分失败。",
   "noArtifact": "此来源中未找到支持的制品。",
   "commit": "提交：{{sha}}",
   "warnings": "警告",
   "artifact": "制品",
   "installTarget": "安装目标",
+  "installTargets": "安装到以下平台",
   "noTargets": "没有兼容的安装目标。",
-  "files": "{{count}} 个文件"
+  "noCompatibleInstalled": "未在本机检测到已安装的兼容工具。请先安装 Claude Code、Codex 或 opencode。",
+  "files": "{{count}} 个文件",
+  "skillPreview": "预览 SKILL 正文",
+  "riskBadge": "风险",
+  "acknowledge": "我已审阅上述警告，并了解安装该 skill 的风险。",
+  "risk": {
+    "low": "低",
+    "medium": "中",
+    "high": "高"
+  },
+  "severity": {
+    "low": "低风险",
+    "medium": "中等风险",
+    "high": "高风险"
+  },
+  "warningKind": {
+    "executableCommand": "可执行命令",
+    "mcpConfig": "MCP 配置",
+    "dangerousShellPattern": "危险 Shell 模式",
+    "promptInjection": "提示词注入",
+    "largePayload": "超大负载"
+  },
+  "review": {
+    "title": "AI 兼容性评级",
+    "loading": "正在评估兼容性…",
+    "skipped": "未配置 LLM 评级。",
+    "skipNote": "前往 Settings 配置 OpenAI 兼容 provider 即可启用 AI 评级。",
+    "failed": "评级不可用",
+    "purpose": "用途",
+    "conflictsTitle": "冲突 ({{count}})",
+    "conflictAcknowledge": "我了解上述冲突，仍要继续安装。",
+    "rating": {
+      "safe": "安全",
+      "caution": "需注意",
+      "conflict": "冲突"
+    },
+    "reasonKind": {
+      "overlap": "功能重叠",
+      "commandCollision": "命令同名",
+      "behaviorConflict": "行为对抗"
+    }
+  }
 }
