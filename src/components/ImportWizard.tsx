@@ -105,7 +105,7 @@ export function ImportWizard({ onClose, onOpenSettings }: Props) {
     () =>
       (inventory?.adapters ?? []).filter(
         (a) =>
-          a.presence.type === "Available" && a.adapterId !== "shared-global"
+          a.presence.type === "available" && a.adapterId !== "shared-global"
       ),
     [inventory]
   );

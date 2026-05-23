@@ -87,7 +87,7 @@ export function Sidebar({
               <li key={a.adapterId} className="flex items-center gap-2 text-xs">
                 <span
                   className={`h-2 w-2 rounded-full flex-none ${
-                    a.presence.type === "Available"
+                    a.presence.type === "available"
                       ? "bg-emerald-400"
                       : "bg-gray-600"
                   }`}

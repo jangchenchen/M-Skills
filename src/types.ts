@@ -6,8 +6,8 @@ export interface ErrorDto {
 }
 
 export type ScopeDto =
-  | { type: "Global" }
-  | { type: "Project"; path: string };
+  | { type: "global" }
+  | { type: "project"; path: string };
 
 export interface TargetDto {
   tool: string;
@@ -15,11 +15,11 @@ export interface TargetDto {
 }
 
 export type SourceDto =
-  | { type: "GitHub"; url: string; rev: string }
-  | { type: "Url"; url: string }
-  | { type: "Local"; path: string }
-  | { type: "Bundled" }
-  | { type: "Unknown" };
+  | { type: "gitHub"; url: string; rev: string }
+  | { type: "url"; url: string }
+  | { type: "local"; path: string }
+  | { type: "bundled" }
+  | { type: "unknown" };
 
 export interface ArtifactDto {
   id: string;
@@ -66,8 +66,8 @@ export interface ArtifactGroupDto {
 }
 
 export type PresenceDto =
-  | { type: "Available" }
-  | { type: "Missing"; reason: string };
+  | { type: "available" }
+  | { type: "missing"; reason: string };
 
 export interface AdapterStatusDto {
   adapterId: string;
@@ -144,9 +144,9 @@ export interface ReviewOutcomeDto {
 }
 
 export type ImportSourceDto =
-  | { type: "Local"; path: string }
-  | { type: "GitHub"; url: string }
-  | { type: "RawUrl"; url: string };
+  | { type: "local"; path: string }
+  | { type: "gitHub"; url: string }
+  | { type: "rawUrl"; url: string };
 
 export interface ImportCandidateDto {
   index: number;
@@ -214,14 +214,14 @@ export interface TranslateConfigDto {
 
 export function targetLabel(t: TargetDto): string {
   const scope =
-    t.scope.type === "Project" ? ` (project)` : "";
+    t.scope.type === "project" ? ` (project)` : "";
   return `${t.tool}${scope}`;
 }
 
 export function sourceLabel(s: SourceDto): string {
-  if (s.type === "GitHub") return s.url;
-  if (s.type === "Url") return s.url;
-  if (s.type === "Local") return s.path;
+  if (s.type === "gitHub") return s.url;
+  if (s.type === "url") return s.url;
+  if (s.type === "local") return s.path;
   return s.type;
 }
 

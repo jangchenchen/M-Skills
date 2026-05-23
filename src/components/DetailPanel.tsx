@@ -155,7 +155,7 @@ export function DetailPanel({ groups, selectedName, selectedKind }: Props) {
       targetTool: string;
     }) => {
       setDraftError(null);
-      const target: TargetDto = { tool: targetTool, scope: { type: "Global" } };
+      const target: TargetDto = { tool: targetTool, scope: { type: "global" } };
       return previewForkSkill({ artifact, target });
     },
     onSuccess: (preview) =>

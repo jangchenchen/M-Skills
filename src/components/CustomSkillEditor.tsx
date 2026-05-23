@@ -69,7 +69,7 @@ export function CustomSkillEditor({
         body: content,
         version: null,
         kind: "Skill",
-        source: { type: "Unknown" },
+        source: { type: "unknown" },
         capabilities: [],
       };
       return rewriteSkillWithLlm({
