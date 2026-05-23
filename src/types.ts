@@ -16,6 +16,7 @@ export interface TargetDto {
 
 export type SourceDto =
   | { type: "GitHub"; url: string; rev: string }
+  | { type: "Url"; url: string }
   | { type: "Local"; path: string }
   | { type: "Bundled" }
   | { type: "Unknown" };
@@ -144,7 +145,8 @@ export interface ReviewOutcomeDto {
 
 export type ImportSourceDto =
   | { type: "Local"; path: string }
-  | { type: "GitHub"; url: string };
+  | { type: "GitHub"; url: string }
+  | { type: "RawUrl"; url: string };
 
 export interface ImportCandidateDto {
   index: number;
@@ -218,6 +220,7 @@ export function targetLabel(t: TargetDto): string {
 
 export function sourceLabel(s: SourceDto): string {
   if (s.type === "GitHub") return s.url;
+  if (s.type === "Url") return s.url;
   if (s.type === "Local") return s.path;
   return s.type;
 }

@@ -7,7 +7,8 @@ use skillsmgr_core::{
     Scope, SkillsMgrError, Source, SourceProvenance, Target, ToolAdapter,
 };
 use skillsmgr_fetch::{
-    preview_github_import, preview_local_import, ImportCandidate, ImportPreview,
+    preview_github_import, preview_local_import, preview_raw_url_import, ImportCandidate,
+    ImportPreview,
 };
 use skillsmgr_registry::Registry;
 use skillsmgr_scan::{default_scopes, discover_project_root, scan_all, ScanError, ScanResult};
@@ -106,6 +107,14 @@ impl Service {
         scopes: Vec<Scope>,
     ) -> Result<ImportPreview> {
         preview_github_import(url, &self.available_targets(scopes).await).await
+    }
+
+    pub async fn preview_raw_url_import(
+        &self,
+        url: impl Into<String>,
+        scopes: Vec<Scope>,
+    ) -> Result<ImportPreview> {
+        preview_raw_url_import(url, &self.available_targets(scopes).await).await
     }
 
     pub async fn install(

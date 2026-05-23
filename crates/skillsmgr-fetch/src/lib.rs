@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use gix::progress::Discard;
 use gix::remote::fetch::Shallow;
+use reqwest::header::CONTENT_TYPE;
 use serde_json::Value as JsonValue;
 use skillsmgr_core::{Artifact, ArtifactKind, Result, SkillsMgrError, Source, Target};
 use skillsmgr_parse::{sniff_artifacts, ArtifactCandidate};
@@ -23,6 +25,7 @@ pub struct ImportPreview {
 pub enum ImportSource {
     Local { path: PathBuf },
     GitHub { url: String },
+    RawUrl { url: String },
 }
 
 #[derive(Debug)]
@@ -103,6 +106,8 @@ const MAX_FILE_SIZE_FOR_CONTENT_SCAN: u64 = 5 * 1024 * 1024;
 const LARGE_FILE_THRESHOLD: u64 = 1024 * 1024;
 /// Total staged directory size above this triggers a `LargePayload` warning.
 const LARGE_PAYLOAD_TOTAL_THRESHOLD: u64 = 10 * 1024 * 1024;
+const RAW_URL_MAX_BYTES: usize = 1024 * 1024;
+const RAW_URL_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub async fn preview_local_import(
     path: impl AsRef<Path>,
@@ -132,6 +137,19 @@ pub async fn preview_github_import(
     let clone_url = normalize_github_url(&url);
     let stage = clone_github_source(&clone_url).await?;
     build_preview(ImportSource::GitHub { url }, stage, available_targets).await
+}
+
+pub async fn preview_raw_url_import(
+    url: impl Into<String>,
+    available_targets: &[Target],
+) -> Result<ImportPreview> {
+    let url = url.into();
+    if !is_raw_url(&url) {
+        return Err(SkillsMgrError::UnsupportedImportSource { input: url });
+    }
+
+    let stage = stage_raw_url(&url).await?;
+    build_preview(ImportSource::RawUrl { url }, stage, available_targets).await
 }
 
 async fn build_preview(
@@ -183,6 +201,7 @@ fn import_candidate(
             url: url.clone(),
             rev: resolved_commit_sha.unwrap_or_default().to_string(),
         },
+        ImportSource::RawUrl { url } => Source::Url { url: url.clone() },
     };
 
     let compatible_targets = compatible_targets(available_targets, artifact.kind);
@@ -252,6 +271,93 @@ async fn clone_github_source(url: &str) -> Result<ImportStage> {
         root,
         resolved_commit_sha: Some(commit_sha),
     })
+}
+
+async fn stage_raw_url(url: &str) -> Result<ImportStage> {
+    let bytes = fetch_raw_url(url).await?;
+    let file_name = raw_url_file_name(url);
+
+    let temp_dir = tempfile::tempdir().map_err(|source| SkillsMgrError::Fs {
+        path: PathBuf::from(url),
+        source,
+    })?;
+    let root = temp_dir.path().join("raw-url-import");
+    fs::create_dir_all(&root)
+        .await
+        .map_err(|source| fs_error(&root, source))?;
+    let file_path = root.join(file_name);
+    fs::write(&file_path, bytes)
+        .await
+        .map_err(|source| fs_error(&file_path, source))?;
+
+    Ok(ImportStage {
+        temp_dir,
+        root,
+        resolved_commit_sha: None,
+    })
+}
+
+async fn fetch_raw_url(url: &str) -> Result<Vec<u8>> {
+    let client = reqwest::Client::builder()
+        .timeout(RAW_URL_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|error| raw_url_error(url, error.to_string()))?;
+
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| raw_url_error(url, error.to_string()))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(raw_url_error(url, format!("HTTP status {status}")));
+    }
+
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if !is_allowed_raw_url_content_type(content_type) {
+        return Err(raw_url_error(
+            url,
+            format!(
+                "content type {content_type:?} is not supported; expected text/plain, text/markdown, or application/json"
+            ),
+        ));
+    }
+
+    if let Some(content_length) = response.content_length() {
+        if content_length > RAW_URL_MAX_BYTES as u64 {
+            return Err(raw_url_error(
+                url,
+                format!(
+                    "content length is {:.1} MB, above the 1 MB raw URL import limit",
+                    content_length as f64 / 1_048_576.0
+                ),
+            ));
+        }
+    }
+
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| raw_url_error(url, error.to_string()))?
+    {
+        if bytes.len() + chunk.len() > RAW_URL_MAX_BYTES {
+            return Err(raw_url_error(
+                url,
+                "downloaded file exceeded the 1 MB raw URL import limit".to_string(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if bytes.is_empty() {
+        return Err(raw_url_error(url, "downloaded file is empty".to_string()));
+    }
+    Ok(bytes)
 }
 
 fn clone_with_gix(url: &str, clone_root: &Path) -> Result<String> {
@@ -722,6 +828,49 @@ fn is_github_url(url: &str) -> bool {
         || lower.starts_with("git@github.com:")
 }
 
+fn is_raw_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    (lower.starts_with("https://") || cfg!(test) && is_loopback_http_url(&lower))
+        && !is_github_url(&lower)
+}
+
+fn is_loopback_http_url(url: &str) -> bool {
+    url.starts_with("http://127.0.0.1:")
+        || url.starts_with("http://localhost:")
+        || url.starts_with("http://[::1]:")
+}
+
+fn is_allowed_raw_url_content_type(content_type: &str) -> bool {
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        media_type.as_str(),
+        "text/plain" | "text/markdown" | "application/json"
+    )
+}
+
+fn raw_url_file_name(url: &str) -> &'static str {
+    let lower = url.to_ascii_lowercase();
+    if lower.ends_with("gemini-extension.json") {
+        "gemini-extension.json"
+    } else if lower.ends_with(".yaml") || lower.ends_with(".yml") {
+        "workflow.yaml"
+    } else {
+        "SKILL.md"
+    }
+}
+
+fn raw_url_error(url: &str, reason: String) -> SkillsMgrError {
+    SkillsMgrError::InvalidArtifact {
+        path: PathBuf::from(url),
+        reason,
+    }
+}
+
 fn normalize_github_url(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/');
     if trimmed.starts_with("git@github.com:") || trimmed.ends_with(".git") {
@@ -782,6 +931,8 @@ mod tests {
 
     use skillsmgr_core::{Scope, Target};
     use tempfile::tempdir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
 
@@ -949,6 +1100,152 @@ mod tests {
                 rev: "abc123".to_string()
             }
         );
+    }
+
+    #[test]
+    fn raw_url_candidate_records_url_source() {
+        let source = tempdir().unwrap();
+        let candidate = ArtifactCandidate {
+            artifact: Artifact::new(
+                "demo",
+                "",
+                None,
+                ArtifactKind::Skill,
+                Source::Local {
+                    path: source.path().to_path_buf(),
+                },
+            ),
+            root: source.path().to_path_buf(),
+        };
+
+        let candidate = import_candidate(
+            candidate,
+            &ImportSource::RawUrl {
+                url: "https://example.com/SKILL.md".to_string(),
+            },
+            None,
+            &targets(),
+        );
+
+        assert_eq!(
+            candidate.artifact.source,
+            Source::Url {
+                url: "https://example.com/SKILL.md".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_url_preview_stages_single_skill_file() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/SKILL.md"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/markdown; charset=utf-8")
+                    .set_body_string("---\nname: demo\ndescription: Demo\n---\n# Demo\n"),
+            )
+            .mount(&server)
+            .await;
+
+        let preview = preview_raw_url_import(format!("{}/SKILL.md", server.uri()), &targets())
+            .await
+            .unwrap();
+
+        assert!(matches!(preview.source, ImportSource::RawUrl { .. }));
+        assert!(preview.stage.root().join("SKILL.md").exists());
+        assert_eq!(preview.candidates.len(), 1);
+        assert_eq!(preview.candidates[0].artifact.kind, ArtifactKind::Skill);
+        assert_eq!(preview.audit.risk_level, AuditSeverity::Low);
+    }
+
+    #[tokio::test]
+    async fn raw_url_preview_stages_gemini_manifest_file() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/gemini-extension.json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_string(
+                        r#"{"name":"demo","description":"Demo","commands":{"run":{"description":"Run it"}}}"#,
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let preview = preview_raw_url_import(
+            format!("{}/gemini-extension.json", server.uri()),
+            &targets(),
+        )
+        .await
+        .unwrap();
+
+        assert!(preview.stage.root().join("gemini-extension.json").exists());
+        assert_eq!(preview.candidates[0].artifact.kind, ArtifactKind::Extension);
+        assert_eq!(
+            preview.candidates[0].compatible_targets,
+            vec![Target::Gemini {
+                scope: Scope::Global
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_url_rejects_non_https_url() {
+        let error = preview_raw_url_import("http://example.com/SKILL.md", &targets())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            SkillsMgrError::UnsupportedImportSource { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn raw_url_rejects_unsupported_content_type() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/SKILL.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw("<html></html>", "text/html"))
+            .mount(&server)
+            .await;
+
+        let error = preview_raw_url_import(format!("{}/SKILL.md", server.uri()), &targets())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            SkillsMgrError::InvalidArtifact { reason, .. }
+                if reason.contains("content type")
+        ));
+    }
+
+    #[tokio::test]
+    async fn raw_url_rejects_payloads_over_one_mb() {
+        let server = MockServer::start().await;
+        let oversized = "a".repeat(RAW_URL_MAX_BYTES + 1);
+        Mock::given(method("GET"))
+            .and(path("/SKILL.md"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/plain")
+                    .set_body_string(oversized),
+            )
+            .mount(&server)
+            .await;
+
+        let error = preview_raw_url_import(format!("{}/SKILL.md", server.uri()), &targets())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            SkillsMgrError::InvalidArtifact { reason, .. }
+                if reason.contains("1 MB")
+        ));
     }
 
     fn write_skill(dir: &Path) {

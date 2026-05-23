@@ -497,6 +497,7 @@ fn upsert_installation_tx(connection: &Connection, installation: &Installation) 
 fn upsert_source_metadata_tx(connection: &Connection, artifact: &Artifact) -> Result<()> {
     let (source_url, commit_sha, local_path) = match &artifact.source {
         Source::GitHub { url, rev } => (Some(url.clone()), Some(rev.clone()), None),
+        Source::Url { url } => (Some(url.clone()), None, None),
         Source::Local { path } => (None, None, Some(path.to_string_lossy().to_string())),
         Source::Bundled | Source::Unknown => (None, None, None),
     };

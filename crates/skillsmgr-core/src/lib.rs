@@ -138,6 +138,7 @@ impl Target {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Source {
     GitHub { url: String, rev: String },
+    Url { url: String },
     Local { path: PathBuf },
     Bundled,
     Unknown,

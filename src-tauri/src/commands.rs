@@ -50,12 +50,19 @@ pub async fn preview_import(
 ) -> Result<ImportPreviewDto, ErrorDto> {
     let scopes = vec![Scope::Global];
     let is_github = path_or_url.starts_with("https://github.com")
-        || path_or_url.starts_with("http://github.com");
+        || path_or_url.starts_with("http://github.com")
+        || path_or_url.starts_with("git@github.com:");
+    let is_raw_url = path_or_url.starts_with("https://");
 
     let preview: ImportPreview = if is_github {
         state
             .service
             .preview_github_import(&path_or_url, scopes)
+            .await
+    } else if is_raw_url {
+        state
+            .service
+            .preview_raw_url_import(&path_or_url, scopes)
             .await
     } else {
         state
@@ -1099,6 +1106,7 @@ async fn build_draft_preview(
     let (source_path, source_url) = match &original.source {
         Source::Local { path } => (Some(path.to_string_lossy().to_string()), None),
         Source::GitHub { url, .. } => (None, Some(url.clone())),
+        Source::Url { url } => (None, Some(url.clone())),
         Source::Bundled | Source::Unknown => (None, None),
     };
 
@@ -1206,6 +1214,7 @@ fn artifact_from_dto(dto: crate::dto::ArtifactDto) -> Result<skillsmgr_core::Art
     };
     let source = match dto.source {
         crate::dto::SourceDto::GitHub { url, rev } => skillsmgr_core::Source::GitHub { url, rev },
+        crate::dto::SourceDto::Url { url } => skillsmgr_core::Source::Url { url },
         crate::dto::SourceDto::Local { path } => skillsmgr_core::Source::Local {
             path: std::path::PathBuf::from(path),
         },

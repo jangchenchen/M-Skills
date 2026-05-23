@@ -345,6 +345,7 @@ pub struct ArtifactDto {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SourceDto {
     GitHub { url: String, rev: String },
+    Url { url: String },
     Local { path: String },
     Bundled,
     Unknown,
@@ -406,6 +407,7 @@ pub struct ImportPreviewDto {
 pub enum ImportSourceDto {
     Local { path: String },
     GitHub { url: String },
+    RawUrl { url: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -646,6 +648,7 @@ impl From<&Source> for SourceDto {
                 url: url.clone(),
                 rev: rev.clone(),
             },
+            Source::Url { url } => SourceDto::Url { url: url.clone() },
             Source::Local { path } => SourceDto::Local {
                 path: path.to_string_lossy().to_string(),
             },
@@ -756,6 +759,7 @@ impl From<&ImportSource> for ImportSourceDto {
                 path: path.to_string_lossy().to_string(),
             },
             ImportSource::GitHub { url } => ImportSourceDto::GitHub { url: url.clone() },
+            ImportSource::RawUrl { url } => ImportSourceDto::RawUrl { url: url.clone() },
         }
     }
 }
