@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
   getTranslateConfig,
@@ -32,6 +33,7 @@ export function SettingsModal({ onClose }: Props) {
   const { t } = useTranslation("settings");
   const { t: tc } = useTranslation("common");
   const errorMessage = useErrorMessage();
+  const qc = useQueryClient();
 
   const [config, setConfig] = useState<TranslateConfigDto>(DEFAULT_CONFIG);
   const [apiKeyInput, setApiKeyInput] = useState("");
@@ -87,6 +89,7 @@ export function SettingsModal({ onClose }: Props) {
     setSaveError(null);
     try {
       await setTranslateConfig(config, apiKeyToSend());
+      qc.invalidateQueries({ queryKey: ["translate-config"] });
       onClose();
     } catch (e) {
       setSaveError(errorMessage(e));

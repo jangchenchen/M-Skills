@@ -57,5 +57,26 @@
       "commandCollision": "命令同名",
       "behaviorConflict": "行为对抗"
     }
+  },
+  "smartAdd": {
+    "chipsLabel": "安装到",
+    "noToolsDetected": "未在本机检测到 AI 工具。",
+    "placeholder": "粘贴 GitHub URL、本地路径，或用一句话描述你想要的 skill…",
+    "submitHint": "⌘↵ 预览",
+    "kind": {
+      "url": "URL",
+      "local": "本地路径",
+      "askAi": "问 AI"
+    },
+    "askAi": {
+      "unconfigured": "Ask AI 尚未配置。请前往 Settings 配置 OpenAI 兼容 provider，即可用自然语言描述 skill。",
+      "openSettings": "打开 Settings",
+      "comingSoon": "自然语言搜索即将上线。"
+    },
+    "submitGate": {
+      "needTarget": "请先在上方选择至少一个目标工具。",
+      "askAiBlocked": "Ask AI 暂不可用。"
+    },
+    "noIntersection": "所选目标工具均与此制品不兼容。"
   }
 }

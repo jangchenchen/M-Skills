@@ -57,5 +57,26 @@
       "commandCollision": "Command name collision",
       "behaviorConflict": "Behavior conflict"
     }
+  },
+  "smartAdd": {
+    "chipsLabel": "Install to",
+    "noToolsDetected": "No AI tool detected on this machine.",
+    "placeholder": "Paste a GitHub URL, drop a local path, or describe what you need…",
+    "submitHint": "⌘↵ to preview",
+    "kind": {
+      "url": "URL",
+      "local": "Local path",
+      "askAi": "Ask AI"
+    },
+    "askAi": {
+      "unconfigured": "Ask AI is not configured. Set up an OpenAI-compatible provider in Settings to describe skills in natural language.",
+      "openSettings": "Open Settings",
+      "comingSoon": "Natural-language search is coming soon."
+    },
+    "submitGate": {
+      "needTarget": "Select at least one target tool above to continue.",
+      "askAiBlocked": "Ask AI is unavailable right now."
+    },
+    "noIntersection": "None of the selected target tools are compatible with this artifact."
   }
 }

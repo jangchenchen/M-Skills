@@ -94,7 +94,12 @@ export function App() {
         </div>
       </main>
 
-      {wizardOpen && <ImportWizard onClose={() => setWizardOpen(false)} />}
+      {wizardOpen && (
+        <ImportWizard
+          onClose={() => setWizardOpen(false)}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+      )}
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>
   );

@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { install, previewImport, reviewImport } from "../api";
+import {
+  getTranslateConfig,
+  install,
+  previewImport,
+  reviewImport,
+  scan,
+} from "../api";
 import { useErrorMessage } from "../useErrorMessage";
 import type {
+  AdapterStatusDto,
   AuditSeverity,
   AuditWarningDto,
   ErrorDto,
@@ -18,10 +25,12 @@ import { CompatibilityNotice } from "./CompatibilityNotice";
 
 interface Props {
   onClose: () => void;
+  onOpenSettings: () => void;
 }
 
 type Step = "input" | "preview" | "done";
 type ReviewState = "loading" | "ready" | "skipped" | "failed";
+type SmartAddKind = "url" | "local" | "askAi" | "empty";
 
 function targetKey(t: TargetDto): string {
   return `${t.tool}:${t.scope.type}`;
@@ -32,13 +41,44 @@ function isAtLeast(level: AuditSeverity, threshold: AuditSeverity): boolean {
   return order[level] >= order[threshold];
 }
 
-export function ImportWizard({ onClose }: Props) {
+export function classifySmartAddInput(raw: string): SmartAddKind {
+  const s = raw.trim();
+  if (!s) return "empty";
+  if (/^https?:\/\//i.test(s)) return "url";
+  if (/^git@[\w.-]+:[\w./~-]+/.test(s)) return "url";
+  if (/^ssh:\/\//i.test(s)) return "url";
+  if (/^file:\/\//i.test(s)) return "local";
+  if (
+    s.startsWith("/") ||
+    s.startsWith("~/") ||
+    s.startsWith("./") ||
+    s.startsWith("../")
+  ) {
+    return "local";
+  }
+  if (/^[A-Za-z]:[\\/]/.test(s)) return "local";
+  if (/^\\\\/.test(s)) return "local";
+  if (/\s/.test(s)) return "askAi";
+  if (s.includes("/")) return "local";
+  return "askAi";
+}
+
+function intersectTargets(
+  chipSelection: Set<string>,
+  targets: TargetDto[]
+): TargetDto[] {
+  if (chipSelection.size === 0) return targets;
+  return targets.filter((t) => chipSelection.has(t.tool));
+}
+
+export function ImportWizard({ onClose, onOpenSettings }: Props) {
   const [step, setStep] = useState<Step>("input");
   const [pathOrUrl, setPathOrUrl] = useState("");
   const [preview, setPreview] = useState<ImportPreviewDto | null>(null);
   const [selectedCandidate, setSelectedCandidate] =
     useState<ImportCandidateDto | null>(null);
   const [selectedTargets, setSelectedTargets] = useState<TargetDto[]>([]);
+  const [chipSelection, setChipSelection] = useState<Set<string>>(new Set());
   const [riskAck, setRiskAck] = useState(false);
   const [conflictAck, setConflictAck] = useState(false);
   const [outcomes, setOutcomes] = useState<InstallOutcomeDto[]>([]);
@@ -51,6 +91,29 @@ export function ImportWizard({ onClose }: Props) {
   const { t, i18n } = useTranslation("wizard");
   const errorMessage = useErrorMessage();
 
+  const { data: inventory } = useQuery({
+    queryKey: ["inventory"],
+    queryFn: () => scan(),
+  });
+  const { data: translateConfig } = useQuery({
+    queryKey: ["translate-config"],
+    queryFn: getTranslateConfig,
+    staleTime: 30_000,
+  });
+  const askAiConfigured = !!translateConfig?.apiKeyPresent;
+  const availableAdapters = useMemo<AdapterStatusDto[]>(
+    () =>
+      (inventory?.adapters ?? []).filter(
+        (a) =>
+          a.presence.type === "Available" && a.adapterId !== "shared-global"
+      ),
+    [inventory]
+  );
+  const inputKind = useMemo<SmartAddKind>(
+    () => classifySmartAddInput(pathOrUrl),
+    [pathOrUrl]
+  );
+
   const previewMut = useMutation({
     mutationFn: () => previewImport(pathOrUrl),
     onSuccess: (data) => {
@@ -61,7 +124,9 @@ export function ImportWizard({ onClose }: Props) {
       if (data.candidates.length > 0) {
         const first = data.candidates[0];
         setSelectedCandidate(first);
-        setSelectedTargets(first.compatibleTargets);
+        setSelectedTargets(
+          intersectTargets(chipSelection, first.compatibleTargets)
+        );
       } else {
         setSelectedCandidate(null);
         setSelectedTargets([]);
@@ -118,9 +183,18 @@ export function ImportWizard({ onClose }: Props) {
 
   const onCandidateChange = (c: ImportCandidateDto) => {
     setSelectedCandidate(c);
-    setSelectedTargets(c.compatibleTargets);
+    setSelectedTargets(intersectTargets(chipSelection, c.compatibleTargets));
     setRiskAck(false);
     setConflictAck(false);
+  };
+
+  const onChipToggle = (id: string) => {
+    setChipSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   const onTargetToggle = (target: TargetDto, checked: boolean) => {
@@ -154,6 +228,12 @@ export function ImportWizard({ onClose }: Props) {
               onSubmit={() => previewMut.mutate()}
               loading={previewMut.isPending}
               error={previewMut.error ? errorMessage(previewMut.error) : undefined}
+              inputKind={inputKind}
+              chipSelection={chipSelection}
+              onChipToggle={onChipToggle}
+              availableAdapters={availableAdapters}
+              askAiConfigured={askAiConfigured}
+              onOpenSettings={onOpenSettings}
             />
           )}
 
@@ -193,30 +273,132 @@ function InputStep({
   onSubmit,
   loading,
   error,
+  inputKind,
+  chipSelection,
+  onChipToggle,
+  availableAdapters,
+  askAiConfigured,
+  onOpenSettings,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSubmit: () => void;
   loading: boolean;
   error?: string;
+  inputKind: SmartAddKind;
+  chipSelection: Set<string>;
+  onChipToggle: (id: string) => void;
+  availableAdapters: AdapterStatusDto[];
+  askAiConfigured: boolean;
+  onOpenSettings: () => void;
 }) {
   const { t } = useTranslation("wizard");
+  const hasTargets = availableAdapters.length > 0;
+  const needsTargetSelection = hasTargets && chipSelection.size === 0;
+  const isAskAi = inputKind === "askAi";
+  const isEmpty = inputKind === "empty";
+  const disabled =
+    loading || !value.trim() || needsTargetSelection || !hasTargets || isAskAi;
+
   return (
     <div className="space-y-4">
-      <p className="text-sm text-gray-400">{t("enterPath")}</p>
-      <input
-        type="text"
-        className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-        placeholder={t("placeholder")}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && !loading && onSubmit()}
-      />
+      <div>
+        <label className="text-xs font-medium text-gray-400 block mb-1.5">
+          {t("smartAdd.chipsLabel")}
+        </label>
+        {hasTargets ? (
+          <div className="flex flex-wrap gap-1.5">
+            {availableAdapters.map((adapter) => {
+              const selected = chipSelection.has(adapter.adapterId);
+              return (
+                <button
+                  key={adapter.adapterId}
+                  type="button"
+                  onClick={() => onChipToggle(adapter.adapterId)}
+                  className={
+                    selected
+                      ? "px-2.5 py-1 rounded-full border text-xs font-medium bg-indigo-600 border-indigo-500 text-white"
+                      : "px-2.5 py-1 rounded-full border text-xs font-medium bg-gray-900 border-gray-700 text-gray-300 hover:border-gray-500"
+                  }
+                >
+                  {adapter.adapterId}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-xs text-amber-400">
+            {t("smartAdd.noToolsDetected")}
+          </p>
+        )}
+      </div>
+
+      <div>
+        <textarea
+          rows={4}
+          className="w-full rounded bg-gray-800 border border-gray-600 px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
+          placeholder={t("smartAdd.placeholder")}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !disabled) {
+              e.preventDefault();
+              onSubmit();
+            }
+          }}
+        />
+        <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-gray-500">
+          {!isEmpty ? (
+            <span
+              className={
+                isAskAi
+                  ? "inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wide bg-amber-950/40 border-amber-900/60 text-amber-300"
+                  : "inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wide bg-gray-800 border-gray-700 text-gray-300"
+              }
+            >
+              {t(`smartAdd.kind.${inputKind}`)}
+            </span>
+          ) : (
+            <span />
+          )}
+          <span>{t("smartAdd.submitHint")}</span>
+        </div>
+      </div>
+
+      {isAskAi && !askAiConfigured && (
+        <div className="rounded border border-amber-900/60 bg-amber-950/30 px-3 py-2.5 space-y-2">
+          <p className="text-xs text-amber-200 leading-relaxed">
+            {t("smartAdd.askAi.unconfigured")}
+          </p>
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="text-xs bg-amber-600 hover:bg-amber-500 text-white px-3 py-1 rounded"
+          >
+            {t("smartAdd.askAi.openSettings")}
+          </button>
+        </div>
+      )}
+      {isAskAi && askAiConfigured && (
+        <div className="rounded border border-gray-700 bg-gray-900/60 px-3 py-2">
+          <p className="text-xs text-gray-400">
+            {t("smartAdd.askAi.comingSoon")}
+          </p>
+        </div>
+      )}
+
+      {needsTargetSelection && !isEmpty && !isAskAi && (
+        <p className="text-xs text-amber-400">
+          {t("smartAdd.submitGate.needTarget")}
+        </p>
+      )}
+
       {error && <p className="text-xs text-red-400">{error}</p>}
+
       <div className="flex justify-end">
         <button
           onClick={onSubmit}
-          disabled={loading || !value.trim()}
+          disabled={disabled}
           className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded"
         >
           {loading ? t("loading") : t("preview")}
@@ -355,25 +537,32 @@ function PreviewStep({
           {noCompatibleTargets ? (
             <p className="text-xs text-amber-400">{t("noCompatibleInstalled")}</p>
           ) : (
-            <ul className="space-y-1.5">
-              {selectedCandidate.compatibleTargets.map((target) => {
-                const k = targetKey(target);
-                const checked = selectedKeys.has(k);
-                return (
-                  <li key={k}>
-                    <label className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) => onTargetToggle(target, e.target.checked)}
-                        className="accent-indigo-500"
-                      />
-                      <span>{targetLabel(target)}</span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
+            <>
+              {selectedTargets.length === 0 && (
+                <p className="text-xs text-amber-400 mb-2">
+                  {t("smartAdd.noIntersection")}
+                </p>
+              )}
+              <ul className="space-y-1.5">
+                {selectedCandidate.compatibleTargets.map((target) => {
+                  const k = targetKey(target);
+                  const checked = selectedKeys.has(k);
+                  return (
+                    <li key={k}>
+                      <label className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => onTargetToggle(target, e.target.checked)}
+                          className="accent-indigo-500"
+                        />
+                        <span>{targetLabel(target)}</span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
           )}
         </div>
       )}
