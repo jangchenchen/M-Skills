@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
+  checkPathExists,
+  classifySkillRequest,
   getTranslateConfig,
   install,
   previewImport,
@@ -18,19 +20,22 @@ import type {
   ImportPreviewDto,
   InstallOutcomeDto,
   ReviewOutcomeDto,
+  SkillIntentOutcomeDto,
   TargetDto,
 } from "../types";
 import { targetLabel } from "../types";
+import { classifySmartAddInput, type SmartAddKind } from "../smartAdd";
 import { CompatibilityNotice } from "./CompatibilityNotice";
 
 interface Props {
   onClose: () => void;
+  onInstalled: (name: string, kind: ImportCandidateDto["artifact"]["kind"]) => void;
   onOpenSettings: () => void;
 }
 
 type Step = "input" | "preview" | "done";
 type ReviewState = "loading" | "ready" | "skipped" | "failed";
-type SmartAddKind = "url" | "local" | "askAi" | "empty";
+type IntentState = "idle" | "loading" | "ready" | "failed";
 
 function targetKey(t: TargetDto): string {
   return `${t.tool}:${t.scope.type}`;
@@ -41,37 +46,14 @@ function isAtLeast(level: AuditSeverity, threshold: AuditSeverity): boolean {
   return order[level] >= order[threshold];
 }
 
-export function classifySmartAddInput(raw: string): SmartAddKind {
-  const s = raw.trim();
-  if (!s) return "empty";
-  if (/^https?:\/\//i.test(s)) return "url";
-  if (/^git@[\w.-]+:[\w./~-]+/.test(s)) return "url";
-  if (/^ssh:\/\//i.test(s)) return "url";
-  if (/^file:\/\//i.test(s)) return "local";
-  if (
-    s.startsWith("/") ||
-    s.startsWith("~/") ||
-    s.startsWith("./") ||
-    s.startsWith("../")
-  ) {
-    return "local";
-  }
-  if (/^[A-Za-z]:[\\/]/.test(s)) return "local";
-  if (/^\\\\/.test(s)) return "local";
-  if (/\s/.test(s)) return "askAi";
-  if (s.includes("/")) return "local";
-  return "askAi";
-}
-
 function intersectTargets(
   chipSelection: Set<string>,
   targets: TargetDto[]
 ): TargetDto[] {
-  if (chipSelection.size === 0) return targets;
   return targets.filter((t) => chipSelection.has(t.tool));
 }
 
-export function ImportWizard({ onClose, onOpenSettings }: Props) {
+export function ImportWizard({ onClose, onInstalled, onOpenSettings }: Props) {
   const [step, setStep] = useState<Step>("input");
   const [pathOrUrl, setPathOrUrl] = useState("");
   const [preview, setPreview] = useState<ImportPreviewDto | null>(null);
@@ -87,6 +69,11 @@ export function ImportWizard({ onClose, onOpenSettings }: Props) {
     null
   );
   const [reviewError, setReviewError] = useState<string | null>(null);
+  const [intentState, setIntentState] = useState<IntentState>("idle");
+  const [intentOutcome, setIntentOutcome] =
+    useState<SkillIntentOutcomeDto | null>(null);
+  const [intentError, setIntentError] = useState<string | null>(null);
+  const [pathExists, setPathExists] = useState(false);
   const qc = useQueryClient();
   const { t, i18n } = useTranslation("wizard");
   const errorMessage = useErrorMessage();
@@ -109,10 +96,31 @@ export function ImportWizard({ onClose, onOpenSettings }: Props) {
       ),
     [inventory]
   );
-  const inputKind = useMemo<SmartAddKind>(
+  const detectedInputKind = useMemo<SmartAddKind>(
     () => classifySmartAddInput(pathOrUrl),
     [pathOrUrl]
   );
+  const inputKind = pathExists && detectedInputKind === "askAi" ? "local" : detectedInputKind;
+
+  useEffect(() => {
+    const trimmed = pathOrUrl.trim();
+    setPathExists(false);
+    if (!trimmed || detectedInputKind === "url") return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      checkPathExists(trimmed)
+        .then((exists) => {
+          if (!cancelled) setPathExists(exists);
+        })
+        .catch(() => {
+          if (!cancelled) setPathExists(false);
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [pathOrUrl, detectedInputKind]);
 
   const previewMut = useMutation({
     mutationFn: () => previewImport(pathOrUrl),
@@ -135,6 +143,26 @@ export function ImportWizard({ onClose, onOpenSettings }: Props) {
     },
   });
 
+  const classifyMut = useMutation({
+    mutationFn: () => {
+      const locale = i18n.resolvedLanguage ?? i18n.language ?? null;
+      return classifySkillRequest(pathOrUrl, locale);
+    },
+    onMutate: () => {
+      setIntentState("loading");
+      setIntentOutcome(null);
+      setIntentError(null);
+    },
+    onSuccess: (data) => {
+      setIntentOutcome(data);
+      setIntentState("ready");
+    },
+    onError: (err) => {
+      setIntentError(errorMessage(err));
+      setIntentState("failed");
+    },
+  });
+
   const installMut = useMutation({
     mutationFn: async () => {
       if (!selectedCandidate || selectedTargets.length === 0) {
@@ -145,6 +173,9 @@ export function ImportWizard({ onClose, onOpenSettings }: Props) {
     onSuccess: (results) => {
       setOutcomes(results);
       qc.invalidateQueries({ queryKey: ["inventory"] });
+      if (selectedCandidate && results.some((result) => result.ok)) {
+        onInstalled(selectedCandidate.artifact.name, selectedCandidate.artifact.kind);
+      }
       setStep("done");
     },
   });
@@ -197,6 +228,21 @@ export function ImportWizard({ onClose, onOpenSettings }: Props) {
     });
   };
 
+  const onInputChange = (next: string) => {
+    setPathOrUrl(next);
+    setIntentState("idle");
+    setIntentOutcome(null);
+    setIntentError(null);
+  };
+
+  const onInputSubmit = () => {
+    if (inputKind === "askAi") {
+      classifyMut.mutate();
+      return;
+    }
+    previewMut.mutate();
+  };
+
   const onTargetToggle = (target: TargetDto, checked: boolean) => {
     setSelectedTargets((prev) => {
       const k = targetKey(target);
@@ -224,15 +270,18 @@ export function ImportWizard({ onClose, onOpenSettings }: Props) {
           {step === "input" && (
             <InputStep
               value={pathOrUrl}
-              onChange={setPathOrUrl}
-              onSubmit={() => previewMut.mutate()}
-              loading={previewMut.isPending}
+              onChange={onInputChange}
+              onSubmit={onInputSubmit}
+              loading={previewMut.isPending || classifyMut.isPending}
               error={previewMut.error ? errorMessage(previewMut.error) : undefined}
               inputKind={inputKind}
               chipSelection={chipSelection}
               onChipToggle={onChipToggle}
               availableAdapters={availableAdapters}
               askAiConfigured={askAiConfigured}
+              intentState={intentState}
+              intentOutcome={intentOutcome}
+              intentError={intentError}
               onOpenSettings={onOpenSettings}
             />
           )}
@@ -249,6 +298,7 @@ export function ImportWizard({ onClose, onOpenSettings }: Props) {
               reviewState={reviewState}
               reviewOutcome={reviewOutcome}
               reviewError={reviewError}
+              selectedTargetTools={chipSelection}
               onCandidateChange={onCandidateChange}
               onTargetToggle={onTargetToggle}
               onInstall={() => installMut.mutate()}
@@ -278,6 +328,9 @@ function InputStep({
   onChipToggle,
   availableAdapters,
   askAiConfigured,
+  intentState,
+  intentOutcome,
+  intentError,
   onOpenSettings,
 }: {
   value: string;
@@ -290,6 +343,9 @@ function InputStep({
   onChipToggle: (id: string) => void;
   availableAdapters: AdapterStatusDto[];
   askAiConfigured: boolean;
+  intentState: IntentState;
+  intentOutcome: SkillIntentOutcomeDto | null;
+  intentError: string | null;
   onOpenSettings: () => void;
 }) {
   const { t } = useTranslation("wizard");
@@ -298,7 +354,12 @@ function InputStep({
   const isAskAi = inputKind === "askAi";
   const isEmpty = inputKind === "empty";
   const disabled =
-    loading || !value.trim() || needsTargetSelection || !hasTargets || isAskAi;
+    loading ||
+    !value.trim() ||
+    needsTargetSelection ||
+    !hasTargets ||
+    (isAskAi && !askAiConfigured);
+  const actionLabel = isAskAi ? t("smartAdd.askAi.classify") : t("preview");
 
   return (
     <div className="space-y-4">
@@ -380,14 +441,23 @@ function InputStep({
         </div>
       )}
       {isAskAi && askAiConfigured && (
-        <div className="rounded border border-gray-700 bg-gray-900/60 px-3 py-2">
-          <p className="text-xs text-gray-400">
-            {t("smartAdd.askAi.comingSoon")}
-          </p>
+        <div className="rounded border border-gray-700 bg-gray-900/60 px-3 py-2 space-y-2">
+          <p className="text-xs text-gray-400">{t("smartAdd.askAi.ready")}</p>
+          {intentState === "loading" && (
+            <p className="text-xs text-gray-500">
+              {t("smartAdd.askAi.classifying")}
+            </p>
+          )}
+          {intentState === "failed" && intentError && (
+            <p className="text-xs text-red-400">{intentError}</p>
+          )}
+          {intentState === "ready" && intentOutcome && (
+            <IntentResult outcome={intentOutcome} />
+          )}
         </div>
       )}
 
-      {needsTargetSelection && !isEmpty && !isAskAi && (
+      {needsTargetSelection && !isEmpty && (
         <p className="text-xs text-amber-400">
           {t("smartAdd.submitGate.needTarget")}
         </p>
@@ -401,9 +471,43 @@ function InputStep({
           disabled={disabled}
           className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded"
         >
-          {loading ? t("loading") : t("preview")}
+          {loading ? t("loading") : actionLabel}
         </button>
       </div>
+    </div>
+  );
+}
+
+function IntentResult({ outcome }: { outcome: SkillIntentOutcomeDto }) {
+  const { t } = useTranslation("wizard");
+
+  if (!outcome.isInstallRequest) {
+    return (
+      <div className="rounded border border-amber-900/50 bg-amber-950/20 px-3 py-2">
+        <p className="text-xs font-medium text-amber-300">
+          {t("smartAdd.askAi.notInstall")}
+        </p>
+        {outcome.reason && (
+          <p className="text-xs text-amber-200 mt-1">{outcome.reason}</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded border border-indigo-900/60 bg-indigo-950/20 px-3 py-2">
+      <p className="text-xs font-medium text-indigo-200">
+        {t("smartAdd.askAi.searchQuery")}
+      </p>
+      <p className="text-sm text-gray-100 mt-1 font-mono">
+        {outcome.searchQuery}
+      </p>
+      {outcome.reason && (
+        <p className="text-xs text-gray-400 mt-1">{outcome.reason}</p>
+      )}
+      <p className="text-[10px] text-gray-600 font-mono mt-2">
+        {outcome.providerKind} / {outcome.model}
+      </p>
     </div>
   );
 }
@@ -419,6 +523,7 @@ function PreviewStep({
   reviewState,
   reviewOutcome,
   reviewError,
+  selectedTargetTools,
   onCandidateChange,
   onTargetToggle,
   onInstall,
@@ -436,6 +541,7 @@ function PreviewStep({
   reviewState: ReviewState;
   reviewOutcome: ReviewOutcomeDto | null;
   reviewError: string | null;
+  selectedTargetTools: Set<string>;
   onCandidateChange: (c: ImportCandidateDto) => void;
   onTargetToggle: (t: TargetDto, checked: boolean) => void;
   onInstall: () => void;
@@ -451,6 +557,15 @@ function PreviewStep({
   const selectedKeys = useMemo(
     () => new Set(selectedTargets.map(targetKey)),
     [selectedTargets]
+  );
+  const visibleTargets = useMemo(
+    () =>
+      selectedCandidate
+        ? selectedCandidate.compatibleTargets.filter((target) =>
+            selectedTargetTools.has(target.tool)
+          )
+        : [],
+    [selectedCandidate, selectedTargetTools]
   );
 
   if (preview.candidates.length === 0) {
@@ -544,7 +659,7 @@ function PreviewStep({
                 </p>
               )}
               <ul className="space-y-1.5">
-                {selectedCandidate.compatibleTargets.map((target) => {
+                {visibleTargets.map((target) => {
                   const k = targetKey(target);
                   const checked = selectedKeys.has(k);
                   return (
@@ -810,6 +925,9 @@ function DoneStep({
   const { t } = useTranslation("wizard");
   const { t: tc } = useTranslation("common");
   const allOk = outcomes.length > 0 && outcomes.every((o) => o.ok);
+  const hasClaudeCodeInstall = outcomes.some(
+    (o) => o.ok && o.target.tool === "claude-code"
+  );
   return (
     <div className="space-y-3 py-2">
       <p
@@ -825,15 +943,27 @@ function DoneStep({
             >
               {o.ok ? "✓" : "✗"}
             </span>
-            <span className="text-gray-200">{targetLabel(o.target)}</span>
-            {!o.ok && o.error && (
-              <span className="text-xs text-red-400">
-                — {errorMessage(o.error)}
-              </span>
-            )}
+            <span className="min-w-0 flex-1">
+              <span className="block text-gray-200">{targetLabel(o.target)}</span>
+              {o.ok && o.installation && (
+                <span className="block text-xs text-gray-500 font-mono break-all">
+                  {o.installation.onDiskPath}
+                </span>
+              )}
+              {!o.ok && o.error && (
+                <span className="block text-xs text-red-400">
+                  {errorMessage(o.error)}
+                </span>
+              )}
+            </span>
           </li>
         ))}
       </ul>
+      {hasClaudeCodeInstall && (
+        <p className="text-xs text-gray-500 leading-relaxed">
+          {t("claudeReloadHint")}
+        </p>
+      )}
       <div className="pt-2 flex justify-end">
         <button
           onClick={onClose}

@@ -12,6 +12,7 @@ import type {
   RewriteSkillOutcomeDto,
   RewriteSkillRequest,
   SaveCustomSkillEditRequest,
+  SkillIntentOutcomeDto,
   SkillDraftPreviewDto,
   SkillSummaryDto,
   SkillSummaryRequest,
@@ -40,6 +41,17 @@ export function reviewImport(
   locale: string | null
 ): Promise<ReviewOutcomeDto> {
   return invoke("review_import", { candidateIndex, locale });
+}
+
+export function checkPathExists(path: string): Promise<boolean> {
+  return invoke("check_path_exists", { path });
+}
+
+export function classifySkillRequest(
+  input: string,
+  locale: string | null
+): Promise<SkillIntentOutcomeDto> {
+  return invoke("classify_skill_request", { input, locale });
 }
 
 export function reviewArtifactCompatibility(

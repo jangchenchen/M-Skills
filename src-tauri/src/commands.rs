@@ -21,9 +21,11 @@ use crate::dto::{
     CompatibilityReviewDto, ConfirmDraftInstallRequestDto, ErrorDto, ForkPreviewRequestDto,
     ImportPreviewDto, InstallOutcomeDto, InstallationDto, InventoryDto, LineageDto,
     NameConflictDto, ReviewConflictDto, ReviewOutcomeDto, RewriteSkillOutcomeDto,
-    RewriteSkillRequestDto, SaveCustomSkillEditRequestDto, SkillDraftPreviewDto, SkillSummaryDto,
-    SkillSummaryRequestDto, TargetDto, TranslateConfigDto, TranslateOutcomeDto,
+    RewriteSkillRequestDto, SaveCustomSkillEditRequestDto, SkillDraftPreviewDto,
+    SkillIntentOutcomeDto, SkillSummaryDto, SkillSummaryRequestDto, TargetDto, TranslateConfigDto,
+    TranslateOutcomeDto,
 };
+use crate::intent;
 use crate::review::{self, SkillSummary};
 use crate::rewrite;
 use crate::state::AppState;
@@ -433,6 +435,47 @@ pub async fn review_import(
         provider_kind: config.provider_kind.as_id().to_string(),
         model: config.model,
     })
+}
+
+#[tauri::command]
+pub async fn check_path_exists(path: String) -> Result<bool, ErrorDto> {
+    Ok(expand_user_path(&path).exists())
+}
+
+#[tauri::command]
+pub async fn classify_skill_request(
+    input: String,
+    locale: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<SkillIntentOutcomeDto, ErrorDto> {
+    let config = skillsmgr_translate::TranslateConfig::load(&state.translate_config_path)
+        .map_err(ErrorDto::from)?;
+    ensure_intent_provider_configured(&config)?;
+    let api_key = keyring_store::get_api_key(config.provider_kind.as_id())
+        .map_err(ErrorDto::from)?
+        .ok_or_else(|| ErrorDto {
+            code: "intentNotConfigured".into(),
+            params: Default::default(),
+        })?;
+
+    let resolved_locale = locale.unwrap_or_else(|| "en".to_string());
+    let request = intent::IntentRequest {
+        input,
+        locale: resolved_locale,
+    };
+    let provider = OpenAICompatProvider::new(
+        config.base_url.clone(),
+        config.model.clone(),
+        api_key,
+        Duration::from_millis(config.timeout_ms),
+        config.max_retries,
+    )
+    .map_err(ErrorDto::from)?;
+    let raw = provider
+        .chat_complete(intent::build_messages(&request), 0.0)
+        .await
+        .map_err(ErrorDto::from)?;
+    compose_intent_outcome(&raw, config.provider_kind.as_id(), &config.model)
 }
 
 #[tauri::command]
@@ -956,6 +999,55 @@ fn review_targets_for_rewrite() -> Vec<Target> {
             scope: Scope::Global,
         },
     ]
+}
+
+fn compose_intent_outcome(
+    raw_chat_output: &str,
+    provider_kind: &str,
+    model: &str,
+) -> Result<SkillIntentOutcomeDto, ErrorDto> {
+    let outcome = intent::parse_outcome(raw_chat_output).map_err(|reason| ErrorDto {
+        code: "intentParseFailed".into(),
+        params: [("reason".into(), reason)].into(),
+    })?;
+    Ok(SkillIntentOutcomeDto {
+        is_install_request: outcome.is_install_request,
+        search_query: outcome.search_query,
+        reason: outcome.reason,
+        provider_kind: provider_kind.to_string(),
+        model: model.to_string(),
+    })
+}
+
+fn ensure_intent_provider_configured(
+    config: &skillsmgr_translate::TranslateConfig,
+) -> Result<(), ErrorDto> {
+    if matches!(config.provider_kind, ProviderKind::OpenAiCompat) {
+        Ok(())
+    } else {
+        Err(ErrorDto {
+            code: "intentNotConfigured".into(),
+            params: Default::default(),
+        })
+    }
+}
+
+fn expand_user_path(path: &str) -> PathBuf {
+    let trimmed = path.trim();
+    if let Some(rest) = trimmed.strip_prefix("file://") {
+        return PathBuf::from(rest);
+    }
+    if trimmed == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(trimmed)
 }
 
 fn compose_rewrite_outcome(
@@ -1626,7 +1718,10 @@ mod batch2_tests {
 mod batch3_tests {
     use skillsmgr_core::{Artifact, ArtifactKind, Scope, Source, Target};
 
-    use super::{compose_rewrite_outcome, review_targets_for_rewrite};
+    use super::{
+        compose_intent_outcome, compose_rewrite_outcome, ensure_intent_provider_configured,
+        review_targets_for_rewrite,
+    };
     use crate::dto::{CompatibilityRiskLevelDto, CompatibilityStatusDto};
 
     fn skill_fixture() -> Artifact {
@@ -1780,6 +1875,58 @@ mod batch3_tests {
 
         let after: Vec<_> = std::fs::read_dir(home.path()).unwrap().collect();
         assert_eq!(before.len(), after.len());
+    }
+
+    #[test]
+    fn compose_intent_outcome_returns_search_query_without_side_effects() {
+        let home = tempfile::tempdir().unwrap();
+        let before: Vec<_> = std::fs::read_dir(home.path()).unwrap().collect();
+        let raw = serde_json::json!({
+            "isInstallRequest": true,
+            "searchQuery": "code review",
+            "reason": "The user wants to install a code review skill."
+        })
+        .to_string();
+
+        let dto = compose_intent_outcome(&raw, "openai-compat", "test-model").unwrap();
+
+        assert!(dto.is_install_request);
+        assert_eq!(dto.search_query.as_deref(), Some("code review"));
+        assert_eq!(dto.provider_kind, "openai-compat");
+        assert_eq!(dto.model, "test-model");
+        let after: Vec<_> = std::fs::read_dir(home.path()).unwrap().collect();
+        assert_eq!(before.len(), after.len());
+    }
+
+    #[test]
+    fn compose_intent_outcome_maps_parser_error() {
+        let err = compose_intent_outcome("not json", "openai-compat", "test-model").unwrap_err();
+        assert_eq!(err.code, "intentParseFailed");
+        assert!(err
+            .params
+            .get("reason")
+            .unwrap()
+            .contains("non-JSON output"));
+    }
+
+    #[test]
+    fn intent_passthrough_provider_reports_not_configured() {
+        let config = skillsmgr_translate::TranslateConfig::default();
+        let err = ensure_intent_provider_configured(&config).unwrap_err();
+        assert_eq!(err.code, "intentNotConfigured");
+    }
+
+    #[test]
+    fn expand_user_path_handles_file_urls_and_home() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            super::expand_user_path("file:///tmp/m-skills-demo"),
+            std::path::PathBuf::from("/tmp/m-skills-demo")
+        );
+        assert_eq!(
+            super::expand_user_path("~/m-skills-demo"),
+            std::path::PathBuf::from(home).join("m-skills-demo")
+        );
     }
 }
 

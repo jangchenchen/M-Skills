@@ -24,6 +24,8 @@
   "rewriteNotConfigured": "AI rewrite needs an LLM provider — configure one in Settings to enable.",
   "rewriteParseFailed": "AI rewrite returned an unparseable response: {{reason}}",
   "rewriteInvalidMode": "Unknown rewrite mode: {{mode}}",
+  "intentNotConfigured": "Ask AI needs an LLM provider — configure one in Settings to enable.",
+  "intentParseFailed": "Ask AI returned an unparseable response: {{reason}}",
   "summarizeNotConfigured": "AI summary skipped: configure an LLM provider in Settings to enable.",
   "summarizeParseFailed": "AI summary returned an unparseable response: {{reason}}"
 }

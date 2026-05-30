@@ -9,6 +9,7 @@
   "installAll": "安装 ({{count}})",
   "successMessage": "已成功安装到全部选中平台。",
   "partialSuccess": "安装完成，但有部分失败。",
+  "claudeReloadHint": "如果新 Claude Code skill 没有出现在已有 Claude 会话中，请新开一个会话或重启 Claude Code，让它重新加载 skills 目录。",
   "noArtifact": "此来源中未找到支持的制品。",
   "commit": "提交：{{sha}}",
   "warnings": "警告",
@@ -71,7 +72,11 @@
     "askAi": {
       "unconfigured": "Ask AI 尚未配置。请前往 Settings 配置 OpenAI 兼容 provider，即可用自然语言描述 skill。",
       "openSettings": "打开 Settings",
-      "comingSoon": "自然语言搜索即将上线。"
+      "ready": "Ask AI 会判断这是否是安装请求，并提取搜索关键词；不会安装或写入任何文件。",
+      "classify": "分类",
+      "classifying": "正在分类请求…",
+      "notInstall": "不是安装请求",
+      "searchQuery": "搜索关键词"
     },
     "submitGate": {
       "needTarget": "请先在上方选择至少一个目标工具。",

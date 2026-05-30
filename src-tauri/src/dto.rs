@@ -219,6 +219,18 @@ pub struct RewriteSkillOutcomeDto {
     pub compatibility_reviews: Vec<CompatibilityReviewDto>,
 }
 
+// ── Smart Add intent (Issue 011) ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillIntentOutcomeDto {
+    pub is_install_request: bool,
+    pub search_query: Option<String>,
+    pub reason: Option<String>,
+    pub provider_kind: String,
+    pub model: String,
+}
+
 // ── AI skill summary (auto-generated post-install) ───────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

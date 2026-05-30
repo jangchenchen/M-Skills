@@ -303,6 +303,16 @@ export interface RewriteSkillOutcomeDto {
   compatibilityReviews: CompatibilityReviewDto[];
 }
 
+// ── Issue 011: Smart Add natural-language intent ─────────────────────────────
+
+export interface SkillIntentOutcomeDto {
+  isInstallRequest: boolean;
+  searchQuery: string | null;
+  reason: string | null;
+  providerKind: string;
+  model: string;
+}
+
 // ── AI skill summary (auto-generated post-install) ────────────────────────────
 
 export interface SkillSummaryDto {

@@ -24,6 +24,8 @@
   "rewriteNotConfigured": "AI 改写需要配置 LLM 提供商，前往 Settings 配置即可启用。",
   "rewriteParseFailed": "AI 改写返回的内容无法解析：{{reason}}",
   "rewriteInvalidMode": "未知的改写模式：{{mode}}",
+  "intentNotConfigured": "Ask AI 需要配置 LLM 提供商，前往 Settings 配置即可启用。",
+  "intentParseFailed": "Ask AI 返回的内容无法解析：{{reason}}",
   "summarizeNotConfigured": "AI 总结已跳过：前往 Settings 配置 LLM 提供商即可启用。",
   "summarizeParseFailed": "AI 总结返回的内容无法解析：{{reason}}"
 }

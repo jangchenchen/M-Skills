@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 mod commands;
 mod compatibility;
 mod dto;
+mod intent;
 mod review;
 mod rewrite;
 mod state;
@@ -84,6 +85,8 @@ pub fn run() {
             commands::set_translate_config,
             commands::test_translate_provider,
             commands::review_import,
+            commands::classify_skill_request,
+            commands::check_path_exists,
             commands::review_artifact_compatibility,
             commands::preview_adapt_skill_for_codex,
             commands::preview_fork_skill,

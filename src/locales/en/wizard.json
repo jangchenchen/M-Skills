@@ -9,6 +9,7 @@
   "installAll": "Install ({{count}})",
   "successMessage": "Installed successfully on every selected platform.",
   "partialSuccess": "Install finished with some failures.",
+  "claudeReloadHint": "If the new Claude Code skill does not appear in an existing Claude session, start a new session or restart Claude Code so it reloads the skills directory.",
   "noArtifact": "No supported artifact found in this source.",
   "commit": "commit: {{sha}}",
   "warnings": "Warnings",
@@ -71,7 +72,11 @@
     "askAi": {
       "unconfigured": "Ask AI is not configured. Set up an OpenAI-compatible provider in Settings to describe skills in natural language.",
       "openSettings": "Open Settings",
-      "comingSoon": "Natural-language search is coming soon."
+      "ready": "Ask AI will classify the request and extract a search query. It will not install or write anything.",
+      "classify": "Classify",
+      "classifying": "Classifying request…",
+      "notInstall": "Not an install request",
+      "searchQuery": "Search query"
     },
     "submitGate": {
       "needTarget": "Select at least one target tool above to continue.",
