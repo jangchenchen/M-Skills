@@ -40,6 +40,11 @@ export function App() {
     setSelectedKind(kind);
   };
 
+  const handleInstalled = (name: string, kind: ArtifactKind) => {
+    setSelectedKind(kind);
+    setSelectedName(name);
+  };
+
   if (isLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-gray-950 text-gray-500 text-sm">
@@ -97,6 +102,7 @@ export function App() {
       {wizardOpen && (
         <ImportWizard
           onClose={() => setWizardOpen(false)}
+          onInstalled={handleInstalled}
           onOpenSettings={() => setSettingsOpen(true)}
         />
       )}
