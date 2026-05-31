@@ -29,6 +29,7 @@ export interface ArtifactDto {
   version: string | null;
   kind: ArtifactKind;
   source: SourceDto;
+  searchAliases: string[];
   capabilities: CapabilityDto[];
   lineage?: LineageDto;
 }
@@ -60,6 +61,7 @@ export interface ArtifactGroupDto {
   description: string;
   body: string | null;
   version: string | null;
+  searchAliases: string[];
   capabilities: CapabilityDto[];
   installations: ScannedInstallationDto[];
   alsoVisibleTo: string[];
@@ -72,6 +74,68 @@ export type PresenceDto =
 export interface AdapterStatusDto {
   adapterId: string;
   presence: PresenceDto;
+  supportedKinds: ArtifactKind[];
+  writable: boolean;
+}
+
+// ── Dashboard (Issue 014) ─────────────────────────────────────────────────────
+
+export type DashboardMetricSeverity = "ok" | "info" | "warning" | "critical";
+
+export interface DashboardKindSummaryDto {
+  kind: ArtifactKind;
+  groups: number;
+  ownedInstallations: number;
+  visibleInstallations: number;
+  compatibleTargets: TargetDto[];
+}
+
+export interface DashboardToolSummaryDto {
+  adapterId: string;
+  available: boolean;
+  writable: boolean;
+  supportedKinds: ArtifactKind[];
+  ownedInstallations: number;
+  visibleInstallations: number;
+  missingReason?: string;
+}
+
+export interface DashboardAttentionItemDto {
+  severity: DashboardMetricSeverity;
+  title: string;
+  body: string;
+  action:
+    | "open_settings"
+    | "open_import"
+    | "rescan"
+    | "filter_kind"
+    | "filter_tool"
+    | "select_artifact"
+    | "none";
+  kind?: ArtifactKind;
+  artifactName?: string;
+  tool?: string;
+}
+
+export interface RecentActionDto {
+  eventType: string;
+  artifactName?: string;
+  target?: string;
+  occurredAt: string;
+  succeeded: boolean;
+}
+
+export interface DashboardDto {
+  generatedAt: string;
+  readyArtifactGroups: number;
+  totalGroups: number;
+  totalOwnedInstallations: number;
+  scanErrors: string[];
+  kindSummaries: DashboardKindSummaryDto[];
+  toolSummaries: DashboardToolSummaryDto[];
+  attentionItems: DashboardAttentionItemDto[];
+  recentActions: RecentActionDto[];
+  registryStaleCount: number;
 }
 
 export interface InventoryDto {

@@ -116,6 +116,10 @@ impl ToolAdapter for HermesAdapter {
         Err(read_only("disable"))
     }
 
+    fn is_writable(&self) -> bool {
+        false
+    }
+
     async fn detect(&self) -> AdapterPresence {
         if self.root.exists() {
             AdapterPresence::Available

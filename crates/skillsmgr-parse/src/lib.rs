@@ -110,6 +110,7 @@ pub async fn parse_skill_dir(root: impl AsRef<Path>) -> Result<ArtifactCandidate
             path: root.to_path_buf(),
         },
     )
+    .with_search_aliases(vec![root.to_string_lossy().to_string()])
     .with_body(parsed.body);
 
     Ok(ArtifactCandidate {
@@ -154,6 +155,7 @@ pub async fn parse_gemini_extension_dir(root: impl AsRef<Path>) -> Result<Artifa
             path: root.to_path_buf(),
         },
     )
+    .with_search_aliases(vec![root.to_string_lossy().to_string()])
     .with_capabilities(capabilities);
 
     Ok(ArtifactCandidate {
@@ -250,6 +252,55 @@ fn parse_skill_markdown(content: &str, path: &Path) -> Result<ParsedSkillMarkdow
 
 pub fn parse_skill_markdown_str(content: &str) -> Result<ParsedSkillMarkdown> {
     parse_skill_markdown(content, Path::new("SKILL.md"))
+}
+
+/// Parse a single flat `.md` file (e.g. `~/.claude/commands/commit.md`).
+/// Name falls back to the filename stem; description falls back to the text of
+/// the first `# Heading` in the body when YAML frontmatter is absent.
+pub async fn parse_flat_skill_file(path: impl AsRef<Path>) -> Result<ArtifactCandidate> {
+    let path = path.as_ref();
+    let content = fs::read_to_string(path)
+        .await
+        .map_err(|source| fs_error(path, source))?;
+    let parsed = parse_skill_markdown(&content, path)?;
+    let fallback_name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("skill")
+        .to_string();
+    let name = parsed.frontmatter.name.unwrap_or(fallback_name);
+    let description = parsed.frontmatter.description.unwrap_or_else(|| {
+        parsed
+            .body
+            .as_deref()
+            .and_then(first_heading_text)
+            .unwrap_or_default()
+    });
+    let artifact = Artifact::new(
+        name,
+        description,
+        parsed.frontmatter.version,
+        ArtifactKind::Skill,
+        Source::Local {
+            path: path.to_path_buf(),
+        },
+    )
+    .with_search_aliases(vec![path.to_string_lossy().to_string()])
+    .with_body(parsed.body);
+
+    Ok(ArtifactCandidate {
+        artifact,
+        root: path.to_path_buf(),
+    })
+}
+
+/// Returns the text content of the first ATX heading (`# …`) in `body`, or
+/// `None` if no heading is present.
+fn first_heading_text(body: &str) -> Option<String> {
+    body.lines()
+        .find(|line| line.starts_with("# "))
+        .map(|line| line.trim_start_matches('#').trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn non_empty_body(body: &str) -> Option<String> {
@@ -475,5 +526,52 @@ mod tests {
         let candidates = sniff_artifacts(dir.path()).await.unwrap();
 
         assert!(candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn flat_skill_file_with_frontmatter_uses_frontmatter_fields() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("commit.md");
+        fs::write(
+            &path,
+            "---\nname: smart-commit\ndescription: Create a commit\nversion: 1.0.0\n---\n# Body\n",
+        )
+        .unwrap();
+
+        let candidate = parse_flat_skill_file(&path).await.unwrap();
+
+        assert_eq!(candidate.artifact.name, "smart-commit");
+        assert_eq!(candidate.artifact.description, "Create a commit");
+        assert_eq!(candidate.artifact.version.as_deref(), Some("1.0.0"));
+        assert_eq!(candidate.artifact.kind, ArtifactKind::Skill);
+    }
+
+    #[tokio::test]
+    async fn flat_skill_file_without_frontmatter_falls_back_to_stem_and_heading() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("commit.md");
+        fs::write(
+            &path,
+            "# Smart Git Commit\n\nAnalyze changes and write message.\n",
+        )
+        .unwrap();
+
+        let candidate = parse_flat_skill_file(&path).await.unwrap();
+
+        assert_eq!(candidate.artifact.name, "commit");
+        assert_eq!(candidate.artifact.description, "Smart Git Commit");
+        assert_eq!(candidate.artifact.kind, ArtifactKind::Skill);
+    }
+
+    #[tokio::test]
+    async fn flat_skill_file_without_frontmatter_or_heading_falls_back_to_empty_description() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("my-skill.md");
+        fs::write(&path, "Some content without a heading.\n").unwrap();
+
+        let candidate = parse_flat_skill_file(&path).await.unwrap();
+
+        assert_eq!(candidate.artifact.name, "my-skill");
+        assert_eq!(candidate.artifact.description, "");
     }
 }

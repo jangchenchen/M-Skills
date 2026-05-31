@@ -1,10 +1,21 @@
 import { useTranslation } from "react-i18next";
+import {
+  SKILL_CATEGORY_MENU_IDS,
+  type SkillCategoryCounts,
+  type SkillCategoryId,
+} from "../skillCategories";
 import type { AdapterStatusDto, ArtifactKind } from "../types";
 
 interface Props {
   adapters: AdapterStatusDto[];
+  skillCategoryCounts: SkillCategoryCounts;
   selectedKind: ArtifactKind | null;
+  selectedSkillCategory: SkillCategoryId;
+  selectedTool: string | null;
+  showDashboard: boolean;
+  onDashboardSelect: () => void;
   onKindSelect: (kind: ArtifactKind | null) => void;
+  onSkillCategorySelect: (category: SkillCategoryId) => void;
   onImportClick: () => void;
   onSettingsClick: () => void;
 }
@@ -13,8 +24,14 @@ const KINDS: ArtifactKind[] = ["Skill", "Extension", "Workflow"];
 
 export function Sidebar({
   adapters,
+  skillCategoryCounts,
   selectedKind,
+  selectedSkillCategory,
+  selectedTool,
+  showDashboard,
+  onDashboardSelect,
   onKindSelect,
+  onSkillCategorySelect,
   onImportClick,
   onSettingsClick,
 }: Props) {
@@ -53,28 +70,82 @@ export function Sidebar({
 
       <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-1">
         <button
+          onClick={onDashboardSelect}
+          className={`w-full text-left px-3 py-2 rounded text-sm ${
+            showDashboard
+              ? "bg-indigo-600 text-white"
+              : "text-gray-300 hover:bg-gray-800"
+          }`}
+        >
+          {t("dashboard")}
+        </button>
+        <button
           onClick={() => onKindSelect(null)}
           className={`w-full text-left px-3 py-2 rounded text-sm ${
-            selectedKind === null
+            !showDashboard && selectedKind === null && selectedTool === null
               ? "bg-indigo-600 text-white"
               : "text-gray-300 hover:bg-gray-800"
           }`}
         >
           {t("allArtifacts")}
         </button>
-        {KINDS.map((k) => (
-          <button
-            key={k}
-            onClick={() => onKindSelect(k)}
-            className={`w-full text-left px-3 py-2 rounded text-sm ${
-              selectedKind === k
-                ? "bg-indigo-600 text-white"
-                : "text-gray-300 hover:bg-gray-800"
-            }`}
-          >
-            {ta(`kindPlural.${k}`)}
-          </button>
-        ))}
+        {KINDS.map((k) =>
+          k === "Skill" ? (
+            <div key={k} className="space-y-1">
+              <button
+                onClick={() => onSkillCategorySelect("all")}
+                className={`flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm ${
+                  !showDashboard &&
+                  selectedKind === "Skill" &&
+                  selectedSkillCategory === "all"
+                    ? "bg-indigo-600 text-white"
+                    : "text-gray-300 hover:bg-gray-800"
+                }`}
+              >
+                <span>{ta(`kindPlural.${k}`)}</span>
+                <span className="text-xs opacity-70">
+                  {skillCategoryCounts.all}
+                </span>
+              </button>
+              {skillCategoryCounts.all > 0 && (
+                <div className="ml-3 space-y-0.5 border-l border-gray-800 pl-2">
+                  {SKILL_CATEGORY_MENU_IDS.map((category) => (
+                      <button
+                        key={category}
+                        onClick={() => onSkillCategorySelect(category)}
+                        className={`flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs ${
+                        !showDashboard &&
+                        selectedKind === "Skill" &&
+                        selectedSkillCategory === category
+                          ? "bg-gray-800 text-gray-100"
+                          : "text-gray-500 hover:bg-gray-800/70 hover:text-gray-300"
+                      }`}
+                      >
+                        <span className="truncate">
+                        {t(`skillCategory.${category}`)}
+                        </span>
+                        <span className="ml-2 flex-none tabular-nums opacity-70">
+                          {skillCategoryCounts[category]}
+                        </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              key={k}
+              onClick={() => onKindSelect(k)}
+              className={`w-full text-left px-3 py-2 rounded text-sm ${
+                !showDashboard && selectedKind === k
+                  ? "bg-indigo-600 text-white"
+                  : "text-gray-300 hover:bg-gray-800"
+              }`}
+            >
+              {ta(`kindPlural.${k}`)}
+            </button>
+          )
+        )}
       </nav>
 
       <div className="px-2 py-3 border-t border-gray-700 space-y-3">

@@ -318,6 +318,7 @@ pub struct ArtifactGroupDto {
     pub description: String,
     pub body: Option<String>,
     pub version: Option<String>,
+    pub search_aliases: Vec<String>,
     pub capabilities: Vec<CapabilityDto>,
     pub installations: Vec<ScannedInstallationDto>,
     pub also_visible_to: Vec<String>,
@@ -348,6 +349,7 @@ pub struct ArtifactDto {
     pub version: Option<String>,
     pub kind: String,
     pub source: SourceDto,
+    pub search_aliases: Vec<String>,
     pub capabilities: Vec<CapabilityDto>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub lineage: Option<LineageDto>,
@@ -394,6 +396,78 @@ pub enum ScopeDto {
 pub struct AdapterStatusDto {
     pub adapter_id: String,
     pub presence: PresenceDto,
+    pub supported_kinds: Vec<String>,
+    pub writable: bool,
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DashboardMetricSeverity {
+    Ok,
+    Info,
+    Warning,
+    Critical,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardKindSummaryDto {
+    pub kind: String,
+    pub groups: usize,
+    pub owned_installations: usize,
+    pub visible_installations: usize,
+    pub compatible_targets: Vec<TargetDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardToolSummaryDto {
+    pub adapter_id: String,
+    pub available: bool,
+    pub writable: bool,
+    pub supported_kinds: Vec<String>,
+    pub owned_installations: usize,
+    pub visible_installations: usize,
+    pub missing_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardAttentionItemDto {
+    pub severity: DashboardMetricSeverity,
+    pub title: String,
+    pub body: String,
+    pub action: String,
+    pub kind: Option<String>,
+    pub artifact_name: Option<String>,
+    pub tool: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentActionDto {
+    pub event_type: String,
+    pub artifact_name: Option<String>,
+    pub target: Option<String>,
+    pub occurred_at: String,
+    pub succeeded: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardDto {
+    pub generated_at: String,
+    pub ready_artifact_groups: usize,
+    pub total_groups: usize,
+    pub total_owned_installations: usize,
+    pub scan_errors: Vec<String>,
+    pub kind_summaries: Vec<DashboardKindSummaryDto>,
+    pub tool_summaries: Vec<DashboardToolSummaryDto>,
+    pub attention_items: Vec<DashboardAttentionItemDto>,
+    pub recent_actions: Vec<RecentActionDto>,
+    pub registry_stale_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -594,6 +668,7 @@ impl From<&ArtifactGroup> for ArtifactGroupDto {
             description: g.description.clone(),
             body: g.body.clone(),
             version: g.version.clone(),
+            search_aliases: g.search_aliases.clone(),
             capabilities: g.capabilities.iter().map(CapabilityDto::from).collect(),
             installations: g
                 .installations
@@ -638,6 +713,7 @@ impl From<&Artifact> for ArtifactDto {
             version: a.version.clone(),
             kind: kind_str(a.kind),
             source: SourceDto::from(&a.source),
+            search_aliases: a.search_aliases.clone(),
             capabilities: a.capabilities.iter().map(CapabilityDto::from).collect(),
             lineage,
         }
@@ -733,6 +809,270 @@ impl From<&AdapterStatus> for AdapterStatusDto {
                     reason: reason.clone(),
                 },
             },
+            supported_kinds: s.supported_kinds.iter().map(|k| kind_str(*k)).collect(),
+            writable: s.writable,
+        }
+    }
+}
+
+pub fn build_dashboard(
+    inv: &Inventory,
+    generated_at: String,
+    recent_actions: Vec<RecentActionDto>,
+    registry_stale_count: usize,
+) -> DashboardDto {
+    // Per-adapter owned installation counts
+    let owned_per_adapter: std::collections::HashMap<&str, usize> = inv
+        .adapters
+        .iter()
+        .map(|a| {
+            let count = inv
+                .groups
+                .iter()
+                .flat_map(|g| &g.installations)
+                .filter(|si| {
+                    matches!(si.provenance, SourceProvenance::Owned)
+                        && si.installation.target.tool_id() == a.adapter_id.as_str()
+                })
+                .count();
+            (a.adapter_id.as_str(), count)
+        })
+        .collect();
+
+    let visible_per_adapter: std::collections::HashMap<&str, usize> = inv
+        .adapters
+        .iter()
+        .map(|a| {
+            let directly_scanned = inv
+                .groups
+                .iter()
+                .flat_map(|g| &g.installations)
+                .filter(|si| si.installation.target.tool_id() == a.adapter_id.as_str())
+                .count();
+            let shared_visible = inv
+                .groups
+                .iter()
+                .filter(|g| g.also_visible_to.iter().any(|tool| tool == &a.adapter_id))
+                .count();
+            (a.adapter_id.as_str(), directly_scanned + shared_visible)
+        })
+        .collect();
+
+    let total_owned: usize = inv
+        .groups
+        .iter()
+        .flat_map(|g| &g.installations)
+        .filter(|si| matches!(si.provenance, SourceProvenance::Owned))
+        .count();
+
+    // Kind summaries
+    let all_kinds = [
+        ArtifactKind::Skill,
+        ArtifactKind::Extension,
+        ArtifactKind::Workflow,
+    ];
+    let kind_summaries: Vec<DashboardKindSummaryDto> = all_kinds
+        .iter()
+        .map(|&kind| {
+            let kind_groups: Vec<_> = inv.groups.iter().filter(|g| g.kind == kind).collect();
+            let owned = kind_groups
+                .iter()
+                .flat_map(|g| &g.installations)
+                .filter(|si| matches!(si.provenance, SourceProvenance::Owned))
+                .count();
+            let visible = kind_groups.iter().flat_map(|g| &g.installations).count();
+            let compatible_targets = inv
+                .adapters
+                .iter()
+                .filter(|a| {
+                    matches!(a.presence, AdapterPresence::Available)
+                        && a.writable
+                        && a.supported_kinds.contains(&kind)
+                })
+                .map(|a| TargetDto {
+                    tool: a.adapter_id.clone(),
+                    scope: ScopeDto::Global,
+                })
+                .collect();
+            DashboardKindSummaryDto {
+                kind: kind_str(kind),
+                groups: kind_groups.len(),
+                owned_installations: owned,
+                visible_installations: visible,
+                compatible_targets,
+            }
+        })
+        .collect();
+
+    // Tool summaries
+    let tool_summaries = inv
+        .adapters
+        .iter()
+        .map(|a| {
+            let (available, missing_reason) = match &a.presence {
+                AdapterPresence::Available => (true, None),
+                AdapterPresence::Missing { reason } => (false, Some(reason.clone())),
+            };
+            DashboardToolSummaryDto {
+                adapter_id: a.adapter_id.clone(),
+                available,
+                writable: a.writable,
+                supported_kinds: a.supported_kinds.iter().map(|k| kind_str(*k)).collect(),
+                owned_installations: owned_per_adapter
+                    .get(a.adapter_id.as_str())
+                    .copied()
+                    .unwrap_or(0),
+                visible_installations: visible_per_adapter
+                    .get(a.adapter_id.as_str())
+                    .copied()
+                    .unwrap_or(0),
+                missing_reason,
+            }
+        })
+        .collect();
+
+    // Attention items
+    let mut attention_items: Vec<DashboardAttentionItemDto> = Vec::new();
+
+    for err in &inv.errors {
+        attention_items.push(DashboardAttentionItemDto {
+            severity: DashboardMetricSeverity::Warning,
+            title: format!("Scan error: {}", err.adapter_id),
+            body: format!(
+                "Rescan after fixing the {} {} problem: {}",
+                err.adapter_id,
+                scope_label(&err.scope),
+                err.message
+            ),
+            action: "rescan".to_string(),
+            kind: None,
+            artifact_name: None,
+            tool: Some(err.adapter_id.clone()),
+        });
+    }
+
+    let has_any_writable = inv
+        .adapters
+        .iter()
+        .any(|a| matches!(a.presence, AdapterPresence::Available) && a.writable);
+    if !has_any_writable {
+        attention_items.push(DashboardAttentionItemDto {
+            severity: DashboardMetricSeverity::Warning,
+            title: "No writable tool available".to_string(),
+            body: "No supported tool directory was found. Open Settings to configure a provider, or install a supported AI tool.".to_string(),
+            action: "open_settings".to_string(),
+            kind: None,
+            artifact_name: None,
+            tool: None,
+        });
+    }
+
+    for tool in inv
+        .adapters
+        .iter()
+        .filter(|a| matches!(a.presence, AdapterPresence::Available) && !a.writable)
+    {
+        attention_items.push(DashboardAttentionItemDto {
+            severity: DashboardMetricSeverity::Info,
+            title: format!("{} is read-only", tool.adapter_id),
+            body: "Filter to this tool to inspect what is already on disk and decide where to move or re-install artifacts.".to_string(),
+            action: "filter_tool".to_string(),
+            kind: None,
+            artifact_name: None,
+            tool: Some(tool.adapter_id.clone()),
+        });
+    }
+
+    for summary in kind_summaries
+        .iter()
+        .filter(|s| s.groups > 0 && s.compatible_targets.is_empty())
+    {
+        attention_items.push(DashboardAttentionItemDto {
+            severity: DashboardMetricSeverity::Info,
+            title: format!("No writable target for {}", summary.kind),
+            body: format!(
+                "{} existing group(s) can be reviewed, but no writable compatible target is currently available.",
+                summary.groups
+            ),
+            action: "filter_kind".to_string(),
+            kind: Some(summary.kind.clone()),
+            artifact_name: None,
+            tool: None,
+        });
+    }
+
+    for group in inv.groups.iter().filter(|g| {
+        g.installations
+            .iter()
+            .all(|si| !matches!(si.provenance, SourceProvenance::Owned))
+    }) {
+        attention_items.push(DashboardAttentionItemDto {
+            severity: DashboardMetricSeverity::Info,
+            title: format!("{} is only visible through another tool", group.name),
+            body:
+                "Open the artifact to review where it is visible before adapting or installing it."
+                    .to_string(),
+            action: "select_artifact".to_string(),
+            kind: Some(kind_str(group.kind)),
+            artifact_name: Some(group.name.clone()),
+            tool: None,
+        });
+    }
+
+    // Ready groups: at least one owned installation
+    let ready = inv
+        .groups
+        .iter()
+        .filter(|g| {
+            g.installations
+                .iter()
+                .any(|si| matches!(si.provenance, SourceProvenance::Owned))
+        })
+        .count();
+
+    let scan_errors = inv
+        .errors
+        .iter()
+        .map(|e| format!("{}: {}", e.adapter_id, e.message))
+        .collect();
+
+    if registry_stale_count > 0 {
+        attention_items.push(DashboardAttentionItemDto {
+            severity: DashboardMetricSeverity::Warning,
+            title: format!(
+                "{} registry record{} missing from disk",
+                registry_stale_count,
+                if registry_stale_count == 1 { "" } else { "s" }
+            ),
+            body:
+                "Registry has installations that no longer exist on disk. Run a rescan to update."
+                    .to_string(),
+            action: "rescan".to_string(),
+            kind: None,
+            artifact_name: None,
+            tool: None,
+        });
+    }
+
+    DashboardDto {
+        generated_at,
+        ready_artifact_groups: ready,
+        total_groups: inv.groups.len(),
+        total_owned_installations: total_owned,
+        scan_errors,
+        kind_summaries,
+        tool_summaries,
+        attention_items,
+        recent_actions,
+        registry_stale_count,
+    }
+}
+
+fn scope_label(scope: &skillsmgr_core::Scope) -> String {
+    match scope {
+        skillsmgr_core::Scope::Global => "global scope".to_string(),
+        skillsmgr_core::Scope::Project(path) => {
+            format!("project scope at {}", path.to_string_lossy())
         }
     }
 }
@@ -761,6 +1101,249 @@ impl From<&ImportPreview> for ImportPreviewDto {
                 .collect(),
             audit: ImportAuditDto::from(&p.audit),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use skillsmgr_core::{
+        AdapterPresence, Artifact, ArtifactKind, Installation, Scope, Source, SourceProvenance,
+        Status, Target,
+    };
+    use skillsmgr_scan::ScanError;
+    use skillsmgr_service::{AdapterStatus, ArtifactGroup, Inventory};
+
+    use super::*;
+
+    fn owned_installation(name: &str, kind: ArtifactKind, target: Target) -> ArtifactGroup {
+        let artifact = Artifact::new(name, "desc", None, kind, Source::Unknown);
+        let installation = Installation {
+            id: uuid::Uuid::new_v4(),
+            artifact_id: artifact.id,
+            target,
+            status: Status::Enabled,
+            on_disk_path: std::path::PathBuf::from(format!("/tmp/{name}")),
+            installed_at: chrono::Utc::now(),
+            installed_version: None,
+        };
+        ArtifactGroup {
+            name: name.to_string(),
+            kind,
+            description: "desc".to_string(),
+            body: None,
+            version: None,
+            search_aliases: Vec::new(),
+            capabilities: Vec::new(),
+            installations: vec![skillsmgr_core::ScannedInstallation {
+                artifact,
+                installation,
+                provenance: SourceProvenance::Owned,
+            }],
+            also_visible_to: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn dashboard_builds_drill_down_attention_items() {
+        let inventory = Inventory {
+            groups: vec![
+                owned_installation(
+                    "skill-a",
+                    ArtifactKind::Skill,
+                    Target::ClaudeCode {
+                        scope: Scope::Global,
+                    },
+                ),
+                ArtifactGroup {
+                    name: "ext-a".to_string(),
+                    kind: ArtifactKind::Extension,
+                    description: "desc".to_string(),
+                    body: None,
+                    version: None,
+                    search_aliases: Vec::new(),
+                    capabilities: Vec::new(),
+                    installations: vec![{
+                        let artifact = Artifact::new(
+                            "ext-a",
+                            "desc",
+                            None,
+                            ArtifactKind::Extension,
+                            Source::Unknown,
+                        );
+                        skillsmgr_core::ScannedInstallation {
+                            installation: Installation {
+                                id: uuid::Uuid::new_v4(),
+                                artifact_id: artifact.id,
+                                target: Target::Gemini {
+                                    scope: Scope::Global,
+                                },
+                                status: Status::Enabled,
+                                on_disk_path: std::path::PathBuf::from("/tmp/ext-a"),
+                                installed_at: chrono::Utc::now(),
+                                installed_version: None,
+                            },
+                            artifact,
+                            provenance: SourceProvenance::Shared {
+                                from_tool: "claude-code".to_string(),
+                            },
+                        }
+                    }],
+                    also_visible_to: vec!["claude-code".to_string()],
+                },
+            ],
+            adapters: vec![
+                AdapterStatus {
+                    adapter_id: "claude-code".to_string(),
+                    presence: AdapterPresence::Available,
+                    supported_kinds: vec![ArtifactKind::Skill],
+                    writable: true,
+                },
+                AdapterStatus {
+                    adapter_id: "gemini".to_string(),
+                    presence: AdapterPresence::Available,
+                    supported_kinds: vec![ArtifactKind::Extension],
+                    writable: false,
+                },
+            ],
+            errors: Vec::new(),
+        };
+
+        let dashboard = build_dashboard(&inventory, "2026-05-31T00:00:00Z".to_string(), vec![], 0);
+
+        assert!(dashboard
+            .attention_items
+            .iter()
+            .any(|item| item.action == "select_artifact"
+                && item.artifact_name.as_deref() == Some("ext-a")));
+        assert!(dashboard
+            .attention_items
+            .iter()
+            .any(|item| item.action == "filter_kind" && item.kind.as_deref() == Some("Extension")));
+    }
+
+    #[test]
+    fn dashboard_scan_errors_offer_rescan_action() {
+        let inventory = Inventory {
+            groups: Vec::new(),
+            adapters: vec![AdapterStatus {
+                adapter_id: "claude-code".to_string(),
+                presence: AdapterPresence::Available,
+                supported_kinds: vec![ArtifactKind::Skill],
+                writable: true,
+            }],
+            errors: vec![ScanError {
+                adapter_id: "claude-code".to_string(),
+                scope: Scope::Global,
+                message: "permission denied".to_string(),
+            }],
+        };
+
+        let dashboard = build_dashboard(&inventory, "2026-05-31T00:00:00Z".to_string(), vec![], 0);
+
+        assert!(dashboard.attention_items.iter().any(|item| {
+            item.action == "rescan" && item.tool.as_deref() == Some("claude-code")
+        }));
+    }
+
+    #[test]
+    fn dashboard_read_only_tools_offer_tool_filter_action() {
+        let inventory = Inventory {
+            groups: vec![owned_installation(
+                "hermes-skill",
+                ArtifactKind::Skill,
+                Target::Hermes,
+            )],
+            adapters: vec![AdapterStatus {
+                adapter_id: "hermes".to_string(),
+                presence: AdapterPresence::Available,
+                supported_kinds: vec![ArtifactKind::Skill],
+                writable: false,
+            }],
+            errors: Vec::new(),
+        };
+
+        let dashboard = build_dashboard(&inventory, "2026-05-31T00:00:00Z".to_string(), vec![], 0);
+
+        assert!(dashboard.attention_items.iter().any(|item| {
+            item.action == "filter_tool" && item.tool.as_deref() == Some("hermes")
+        }));
+    }
+
+    #[test]
+    fn dashboard_counts_visible_installations_per_tool() {
+        let owned_artifact = Artifact::new(
+            "skill-a",
+            "desc",
+            None,
+            ArtifactKind::Skill,
+            Source::Unknown,
+        );
+        let shared_artifact = Artifact::new(
+            "skill-b",
+            "desc",
+            None,
+            ArtifactKind::Skill,
+            Source::Unknown,
+        );
+        let inventory = Inventory {
+            groups: vec![ArtifactGroup {
+                name: "skill-a".to_string(),
+                kind: ArtifactKind::Skill,
+                description: "desc".to_string(),
+                body: None,
+                version: None,
+                search_aliases: Vec::new(),
+                capabilities: Vec::new(),
+                installations: vec![
+                    skillsmgr_core::ScannedInstallation {
+                        artifact: owned_artifact,
+                        installation: Installation {
+                            id: uuid::Uuid::new_v4(),
+                            artifact_id: uuid::Uuid::new_v4(),
+                            target: Target::ClaudeCode {
+                                scope: Scope::Global,
+                            },
+                            status: Status::Enabled,
+                            on_disk_path: std::path::PathBuf::from("/tmp/skill-a"),
+                            installed_at: chrono::Utc::now(),
+                            installed_version: None,
+                        },
+                        provenance: SourceProvenance::Owned,
+                    },
+                    skillsmgr_core::ScannedInstallation {
+                        artifact: shared_artifact,
+                        installation: Installation {
+                            id: uuid::Uuid::new_v4(),
+                            artifact_id: uuid::Uuid::new_v4(),
+                            target: Target::ClaudeCode {
+                                scope: Scope::Global,
+                            },
+                            status: Status::Enabled,
+                            on_disk_path: std::path::PathBuf::from("/tmp/skill-b"),
+                            installed_at: chrono::Utc::now(),
+                            installed_version: None,
+                        },
+                        provenance: SourceProvenance::Shared {
+                            from_tool: "opencode".to_string(),
+                        },
+                    },
+                ],
+                also_visible_to: vec!["opencode".to_string()],
+            }],
+            adapters: vec![AdapterStatus {
+                adapter_id: "claude-code".to_string(),
+                presence: AdapterPresence::Available,
+                supported_kinds: vec![ArtifactKind::Skill],
+                writable: true,
+            }],
+            errors: Vec::new(),
+        };
+
+        let dashboard = build_dashboard(&inventory, "2026-05-31T00:00:00Z".to_string(), vec![], 0);
+        let tool = &dashboard.tool_summaries[0];
+
+        assert_eq!(tool.owned_installations, 1);
+        assert_eq!(tool.visible_installations, 2);
     }
 }
 

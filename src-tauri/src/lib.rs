@@ -95,6 +95,7 @@ pub fn run() {
             commands::rewrite_skill_with_llm,
             commands::get_skill_summary,
             commands::generate_skill_summary,
+            commands::get_dashboard,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

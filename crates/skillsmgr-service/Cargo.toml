@@ -11,6 +11,8 @@ skillsmgr-adapters = { path = "../skillsmgr-adapters" }
 skillsmgr-fetch = { path = "../skillsmgr-fetch" }
 skillsmgr-registry = { path = "../skillsmgr-registry" }
 skillsmgr-scan = { path = "../skillsmgr-scan" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync"] }
 
 [dev-dependencies]

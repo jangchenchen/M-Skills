@@ -70,6 +70,7 @@ export function CustomSkillEditor({
         version: null,
         kind: "Skill",
         source: { type: "unknown" },
+        searchAliases: [],
         capabilities: [],
       };
       return rewriteSkillWithLlm({

@@ -3,6 +3,7 @@ import type {
   ArtifactDto,
   CompatibilityReviewDto,
   ConfirmDraftInstallRequest,
+  DashboardDto,
   ForkPreviewRequest,
   ImportPreviewDto,
   InstallOutcomeDto,
@@ -23,6 +24,10 @@ import type {
 
 export function scan(cwd?: string): Promise<InventoryDto> {
   return invoke("scan", { cwd: cwd ?? null });
+}
+
+export function getDashboard(cwd?: string): Promise<DashboardDto> {
+  return invoke("get_dashboard", { cwd: cwd ?? null });
 }
 
 export function previewImport(pathOrUrl: string): Promise<ImportPreviewDto> {

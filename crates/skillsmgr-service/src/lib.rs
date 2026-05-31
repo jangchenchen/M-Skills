@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde::Deserialize;
 use skillsmgr_adapters::{claude_code, codex, gemini, hermes::HermesAdapter, opencode};
 use skillsmgr_core::{
     AdapterPresence, Artifact, ArtifactKind, Capability, Installation, Result, ScannedInstallation,
@@ -10,13 +12,15 @@ use skillsmgr_fetch::{
     preview_github_import, preview_local_import, preview_raw_url_import, ImportCandidate,
     ImportPreview,
 };
-use skillsmgr_registry::Registry;
+use skillsmgr_registry::{RecordEventInput, Registry, RegistryEvent};
 use skillsmgr_scan::{default_scopes, discover_project_root, scan_all, ScanError, ScanResult};
 
 #[derive(Debug, Clone)]
 pub struct AdapterStatus {
     pub adapter_id: String,
     pub presence: AdapterPresence,
+    pub supported_kinds: Vec<ArtifactKind>,
+    pub writable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +30,7 @@ pub struct ArtifactGroup {
     pub description: String,
     pub body: Option<String>,
     pub version: Option<String>,
+    pub search_aliases: Vec<String>,
     pub capabilities: Vec<Capability>,
     pub installations: Vec<ScannedInstallation>,
     pub also_visible_to: Vec<String>,
@@ -41,6 +46,7 @@ pub struct Inventory {
 pub struct Service {
     adapters: Vec<Arc<dyn ToolAdapter>>,
     registry: Option<tokio::sync::Mutex<Registry>>,
+    home: Option<PathBuf>,
 }
 
 impl Service {
@@ -48,6 +54,7 @@ impl Service {
         Self {
             adapters,
             registry: None,
+            home: None,
         }
     }
 
@@ -58,6 +65,7 @@ impl Service {
         Self {
             adapters,
             registry: Some(tokio::sync::Mutex::new(registry)),
+            home: None,
         }
     }
 
@@ -73,6 +81,7 @@ impl Service {
         Self {
             adapters,
             registry: None,
+            home: Some(home),
         }
     }
 
@@ -90,7 +99,11 @@ impl Service {
 
     pub async fn inventory_for_scopes(&self, scopes: Vec<Scope>) -> Inventory {
         let results = scan_all(self.adapters.clone(), scopes).await;
-        build_inventory(results)
+        let mut inventory = build_inventory(results);
+        if let Some(home) = &self.home {
+            apply_claude_plugin_aliases(&mut inventory, home);
+        }
+        inventory
     }
 
     pub async fn preview_local_import(
@@ -130,10 +143,15 @@ impl Service {
             .await?;
         let installation = adapter.install(artifact, scope).await?;
         if let Some(registry) = &self.registry {
-            registry
-                .lock()
-                .await
-                .record_installation(artifact, &installation)?;
+            let mut reg = registry.lock().await;
+            reg.record_installation(artifact, &installation)?;
+            let _ = reg.record_event(RecordEventInput {
+                event_type: "install".to_string(),
+                artifact_name: Some(artifact.name.clone()),
+                target: Some(installation.target.tool_id().to_string()),
+                succeeded: true,
+                error_message: None,
+            });
         }
         Ok(installation)
     }
@@ -160,10 +178,15 @@ impl Service {
         let installation = adapter.install(&copy_artifact, scope).await?;
 
         if let Some(registry) = &self.registry {
-            registry
-                .lock()
-                .await
-                .record_installation(&candidate.artifact, &installation)?;
+            let mut reg = registry.lock().await;
+            reg.record_installation(&candidate.artifact, &installation)?;
+            let _ = reg.record_event(RecordEventInput {
+                event_type: "install".to_string(),
+                artifact_name: Some(candidate.artifact.name.clone()),
+                target: Some(installation.target.tool_id().to_string()),
+                succeeded: true,
+                error_message: None,
+            });
         }
         Ok(installation)
     }
@@ -172,7 +195,16 @@ impl Service {
         let adapter = self.adapter_for_target(&installation.target)?;
         adapter.uninstall(installation).await?;
         if let Some(registry) = &self.registry {
-            registry.lock().await.record_uninstall(installation.id)?;
+            let mut reg = registry.lock().await;
+            let artifact_name = reg.artifact_name_by_id(installation.artifact_id);
+            reg.record_uninstall(installation.id)?;
+            let _ = reg.record_event(RecordEventInput {
+                event_type: "uninstall".to_string(),
+                artifact_name,
+                target: Some(installation.target.tool_id().to_string()),
+                succeeded: true,
+                error_message: None,
+            });
         }
         Ok(())
     }
@@ -207,6 +239,34 @@ impl Service {
             .flat_map(|result| result.items)
             .collect::<Vec<_>>();
         registry.lock().await.upsert_scan_results(&scanned)
+    }
+
+    pub async fn record_event(&self, input: RecordEventInput) {
+        if let Some(registry) = &self.registry {
+            let _ = registry.lock().await.record_event(input);
+        }
+    }
+
+    pub async fn recent_events(&self, limit: usize) -> Vec<RegistryEvent> {
+        if let Some(registry) = &self.registry {
+            return registry
+                .lock()
+                .await
+                .recent_events(limit)
+                .unwrap_or_default();
+        }
+        vec![]
+    }
+
+    pub async fn stale_installation_count(&self) -> usize {
+        if let Some(registry) = &self.registry {
+            return registry
+                .lock()
+                .await
+                .stale_installation_count()
+                .unwrap_or(0);
+        }
+        0
     }
 
     /// Targets that this Service can install into right now. An adapter is
@@ -307,6 +367,8 @@ fn build_inventory(results: Vec<ScanResult>) -> Inventory {
         adapters.push(AdapterStatus {
             adapter_id: result.adapter_id,
             presence: result.presence,
+            supported_kinds: result.supported_kinds.to_vec(),
+            writable: result.writable,
         });
         errors.extend(result.errors);
 
@@ -337,12 +399,14 @@ fn insert_into_group(groups: &mut Vec<ArtifactGroup>, item: ScannedInstallation)
     }
 
     let also_visible_to = shared_visibility(&item).into_iter().collect();
+    let search_aliases = item.artifact.search_aliases.clone();
     groups.push(ArtifactGroup {
         name: item.artifact.name.clone(),
         kind: item.artifact.kind,
         description: item.artifact.description.clone(),
         body: item.artifact.body.clone(),
         version: item.artifact.version.clone(),
+        search_aliases,
         capabilities: item.artifact.capabilities.clone(),
         installations: vec![item],
         also_visible_to,
@@ -399,6 +463,209 @@ fn merge_metadata(group: &mut ArtifactGroup, artifact: &Artifact) {
     if group.capabilities.is_empty() && !artifact.capabilities.is_empty() {
         group.capabilities = artifact.capabilities.clone();
     }
+    push_unique_aliases(
+        &mut group.search_aliases,
+        artifact.search_aliases.iter().cloned(),
+    );
+}
+
+fn apply_claude_plugin_aliases(inv: &mut Inventory, home: &Path) {
+    let aliases_by_skill_name = claude_plugin_skill_aliases(home);
+    if aliases_by_skill_name.is_empty() {
+        return;
+    }
+
+    for group in &mut inv.groups {
+        if group.kind != ArtifactKind::Skill {
+            continue;
+        }
+        let Some(aliases) = aliases_by_skill_name.get(&group.name) else {
+            continue;
+        };
+        push_unique_aliases(&mut group.search_aliases, aliases.iter().cloned());
+        for installation in &mut group.installations {
+            if installation.artifact.kind == ArtifactKind::Skill
+                && installation.artifact.name == group.name
+            {
+                push_unique_aliases(
+                    &mut installation.artifact.search_aliases,
+                    aliases.iter().cloned(),
+                );
+            }
+        }
+    }
+}
+
+fn claude_plugin_skill_aliases(home: &Path) -> HashMap<String, Vec<String>> {
+    let mut aliases_by_skill_name = HashMap::new();
+    let installed = read_installed_claude_plugins(home);
+    for plugin in installed {
+        for skill in read_claude_plugin_skills(&plugin.install_path) {
+            let mut aliases = vec![
+                plugin.package_id.clone(),
+                plugin.install_path.to_string_lossy().to_string(),
+            ];
+            aliases.extend(plugin.package_id.split('@').map(str::to_string));
+            aliases.extend(plugin.version.iter().cloned());
+            aliases.extend(plugin.git_commit_sha.iter().cloned());
+            aliases.extend(skill.aliases);
+            push_unique_aliases(
+                aliases_by_skill_name
+                    .entry(skill.name)
+                    .or_insert_with(Vec::new),
+                aliases,
+            );
+        }
+    }
+    aliases_by_skill_name
+}
+
+#[derive(Debug, Clone)]
+struct InstalledClaudePlugin {
+    package_id: String,
+    install_path: PathBuf,
+    version: Option<String>,
+    git_commit_sha: Option<String>,
+}
+
+#[derive(Debug)]
+struct ClaudePluginSkill {
+    name: String,
+    aliases: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InstalledClaudePluginsFile {
+    #[serde(default)]
+    plugins: HashMap<String, Vec<InstalledClaudePluginRecord>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InstalledClaudePluginRecord {
+    install_path: PathBuf,
+    version: Option<String>,
+    git_commit_sha: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudePluginManifest {
+    name: Option<String>,
+    description: Option<String>,
+    version: Option<String>,
+    #[serde(default)]
+    keywords: Vec<String>,
+    #[serde(default)]
+    skills: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeMarketplaceManifest {
+    name: Option<String>,
+    id: Option<String>,
+    #[serde(default)]
+    plugins: Vec<ClaudeMarketplacePlugin>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeMarketplacePlugin {
+    name: Option<String>,
+    description: Option<String>,
+    version: Option<String>,
+    #[serde(default)]
+    keywords: Vec<String>,
+    category: Option<String>,
+}
+
+fn read_installed_claude_plugins(home: &Path) -> Vec<InstalledClaudePlugin> {
+    let path = home.join(".claude/plugins/installed_plugins.json");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(parsed) = serde_json::from_str::<InstalledClaudePluginsFile>(&content) else {
+        return Vec::new();
+    };
+
+    let mut plugins = Vec::new();
+    for (package_id, records) in parsed.plugins {
+        for record in records {
+            plugins.push(InstalledClaudePlugin {
+                package_id: package_id.clone(),
+                install_path: record.install_path,
+                version: record.version,
+                git_commit_sha: record.git_commit_sha,
+            });
+        }
+    }
+    plugins
+}
+
+fn read_claude_plugin_skills(install_path: &Path) -> Vec<ClaudePluginSkill> {
+    let plugin_manifest =
+        read_json::<ClaudePluginManifest>(&install_path.join(".claude-plugin/plugin.json"));
+    let marketplace_manifest = read_json::<ClaudeMarketplaceManifest>(
+        &install_path.join(".claude-plugin/marketplace.json"),
+    );
+    let skills = plugin_manifest
+        .as_ref()
+        .map(|manifest| manifest.skills.clone())
+        .unwrap_or_default();
+
+    skills
+        .into_iter()
+        .filter_map(|skill_path| {
+            let skill_name = skill_name_from_plugin_path(&skill_path)?;
+            let mut aliases = vec![skill_path];
+            if let Some(manifest) = &plugin_manifest {
+                aliases.extend(manifest.name.iter().cloned());
+                aliases.extend(manifest.description.iter().cloned());
+                aliases.extend(manifest.version.iter().cloned());
+                aliases.extend(manifest.keywords.iter().cloned());
+            }
+            if let Some(marketplace) = &marketplace_manifest {
+                aliases.extend(marketplace.name.iter().cloned());
+                aliases.extend(marketplace.id.iter().cloned());
+                for plugin in &marketplace.plugins {
+                    aliases.extend(plugin.name.iter().cloned());
+                    aliases.extend(plugin.description.iter().cloned());
+                    aliases.extend(plugin.version.iter().cloned());
+                    aliases.extend(plugin.keywords.iter().cloned());
+                    aliases.extend(plugin.category.iter().cloned());
+                }
+            }
+            Some(ClaudePluginSkill {
+                name: skill_name,
+                aliases,
+            })
+        })
+        .collect()
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn skill_name_from_plugin_path(path: &str) -> Option<String> {
+    let trimmed = path.trim().trim_end_matches('/');
+    let name = Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())?;
+    Some(name.to_string())
+}
+
+fn push_unique_aliases(values: &mut Vec<String>, aliases: impl IntoIterator<Item = String>) {
+    for alias in aliases {
+        let alias = alias.trim();
+        if alias.is_empty() {
+            continue;
+        }
+        if !values.iter().any(|existing| existing == alias) {
+            values.push(alias.to_string());
+        }
+    }
+    values.sort();
 }
 
 #[cfg(test)]
@@ -494,6 +761,94 @@ mod tests {
             "claude-code"
         );
         assert_eq!(polish.also_visible_to, vec!["opencode"]);
+    }
+
+    #[tokio::test]
+    async fn inventory_indexes_claude_plugin_package_aliases_for_skills() {
+        let home = tempdir().unwrap();
+        write_skill(
+            &home.path().join(".claude/skills"),
+            "karpathy-guidelines",
+            "Behavioral coding guidelines",
+            None,
+        );
+
+        let plugin_root = home
+            .path()
+            .join(".claude/plugins/cache/karpathy-skills/andrej-karpathy-skills/1.0.0");
+        fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
+        fs::write(
+            plugin_root.join(".claude-plugin/plugin.json"),
+            serde_json::json!({
+                "name": "andrej-karpathy-skills",
+                "description": "Behavioral guidelines to reduce common LLM coding mistakes",
+                "version": "1.0.0",
+                "keywords": ["guidelines", "karpathy"],
+                "skills": ["./skills/karpathy-guidelines"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            plugin_root.join(".claude-plugin/marketplace.json"),
+            serde_json::json!({
+                "name": "karpathy-skills",
+                "id": "karpathy-skills",
+                "plugins": [
+                    {
+                        "name": "andrej-karpathy-skills",
+                        "description": "Think Before Coding, Simplicity First",
+                        "version": "1.0.0",
+                        "keywords": ["best-practices", "coding"],
+                        "category": "workflow"
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::create_dir_all(home.path().join(".claude/plugins")).unwrap();
+        fs::write(
+            home.path().join(".claude/plugins/installed_plugins.json"),
+            serde_json::json!({
+                "version": 2,
+                "plugins": {
+                    "andrej-karpathy-skills@karpathy-skills": [
+                        {
+                            "scope": "user",
+                            "installPath": plugin_root,
+                            "version": "1.0.0",
+                            "gitCommitSha": "2c606141936f1eeef17fa3043a72095b4765b9c2"
+                        }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let service = Service::with_home(home.path());
+        let inventory = service.inventory_for_scopes(vec![Scope::Global]).await;
+
+        let group = inventory
+            .groups
+            .iter()
+            .find(|g| g.name == "karpathy-guidelines")
+            .unwrap();
+
+        assert!(group
+            .search_aliases
+            .contains(&"andrej-karpathy-skills@karpathy-skills".to_string()));
+        assert!(group
+            .search_aliases
+            .contains(&"andrej-karpathy-skills".to_string()));
+        assert!(group
+            .search_aliases
+            .contains(&"karpathy-skills".to_string()));
+        assert!(group.installations.iter().any(|item| item
+            .artifact
+            .search_aliases
+            .contains(&"andrej-karpathy-skills@karpathy-skills".to_string())));
     }
 
     #[tokio::test]
@@ -764,5 +1119,49 @@ mod tests {
             .rebuild_registry_for_scopes(vec![Scope::Global])
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn inventory_adapter_status_carries_writable_and_kinds() {
+        let home = tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".claude/skills")).unwrap();
+
+        let service = Service::with_home(home.path());
+        let inventory = service.inventory_for_scopes(vec![Scope::Global]).await;
+
+        let claude = inventory
+            .adapters
+            .iter()
+            .find(|a| a.adapter_id == "claude-code")
+            .unwrap();
+        assert!(claude.writable);
+        assert!(claude.supported_kinds.contains(&ArtifactKind::Skill));
+
+        let hermes = inventory
+            .adapters
+            .iter()
+            .find(|a| a.adapter_id == "hermes")
+            .unwrap();
+        assert!(!hermes.writable);
+    }
+
+    #[tokio::test]
+    async fn build_inventory_produces_correct_group_counts() {
+        let home = tempdir().unwrap();
+        let claude_root = home.path().join(".claude/skills");
+        write_skill(&claude_root, "alpha", "Alpha skill", None);
+        write_skill(&claude_root, "beta", "Beta skill", None);
+
+        let service = Service::with_adapters(vec![Arc::new(claude_code::adapter(home.path()))]);
+        let inventory = service.inventory_for_scopes(vec![Scope::Global]).await;
+
+        assert_eq!(inventory.groups.len(), 2);
+        let owned_count: usize = inventory
+            .groups
+            .iter()
+            .flat_map(|g| &g.installations)
+            .filter(|si| matches!(si.provenance, SourceProvenance::Owned))
+            .count();
+        assert_eq!(owned_count, 2);
     }
 }

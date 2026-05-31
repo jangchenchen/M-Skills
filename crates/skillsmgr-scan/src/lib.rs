@@ -15,6 +15,8 @@ pub struct ScanError {
 pub struct ScanResult {
     pub adapter_id: String,
     pub presence: AdapterPresence,
+    pub supported_kinds: &'static [skillsmgr_core::ArtifactKind],
+    pub writable: bool,
     pub items: Vec<ScannedInstallation>,
     pub errors: Vec<ScanError>,
 }
@@ -22,6 +24,8 @@ pub struct ScanResult {
 pub async fn scan_one(adapter: Arc<dyn ToolAdapter>, scopes: Vec<Scope>) -> ScanResult {
     let adapter_id = adapter.id().to_string();
     let presence = adapter.detect().await;
+    let supported_kinds = adapter.supported_kinds();
+    let writable = adapter.is_writable();
 
     let mut items = Vec::new();
     let mut errors = Vec::new();
@@ -39,6 +43,8 @@ pub async fn scan_one(adapter: Arc<dyn ToolAdapter>, scopes: Vec<Scope>) -> Scan
     ScanResult {
         adapter_id,
         presence,
+        supported_kinds,
+        writable,
         items,
         errors,
     }
@@ -60,6 +66,8 @@ pub async fn scan_all(adapters: Vec<Arc<dyn ToolAdapter>>, scopes: Vec<Scope>) -
                 presence: AdapterPresence::Missing {
                     reason: error.to_string(),
                 },
+                supported_kinds: &[],
+                writable: false,
                 items: Vec::new(),
                 errors: Vec::new(),
             }),

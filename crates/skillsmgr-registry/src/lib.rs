@@ -76,6 +76,25 @@ pub struct SkillSummaryInput {
     pub model: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryEvent {
+    pub id: Uuid,
+    pub event_type: String,
+    pub artifact_name: Option<String>,
+    pub target: Option<String>,
+    pub succeeded: bool,
+    pub error_message: Option<String>,
+    pub occurred_at: DateTime<Utc>,
+}
+
+pub struct RecordEventInput {
+    pub event_type: String,
+    pub artifact_name: Option<String>,
+    pub target: Option<String>,
+    pub succeeded: bool,
+    pub error_message: Option<String>,
+}
+
 impl Registry {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -126,6 +145,113 @@ impl Registry {
             )
             .map_err(registry_error)?;
         Ok(())
+    }
+
+    pub fn artifact_name_by_id(&self, artifact_id: Uuid) -> Option<String> {
+        self.connection
+            .query_row(
+                "SELECT name FROM artifacts WHERE id = ?1",
+                params![artifact_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    pub fn record_event(&mut self, input: RecordEventInput) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        let occurred_at = Utc::now().to_rfc3339();
+        self.connection
+            .execute(
+                "INSERT INTO events (id, event_type, artifact_name, target, succeeded, error_message, occurred_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    input.event_type,
+                    input.artifact_name,
+                    input.target,
+                    input.succeeded as i32,
+                    input.error_message,
+                    occurred_at,
+                ],
+            )
+            .map_err(registry_error)?;
+        Ok(())
+    }
+
+    pub fn recent_events(&self, limit: usize) -> Result<Vec<RegistryEvent>> {
+        let mut stmt = self
+            .connection
+            .prepare(
+                "SELECT id, event_type, artifact_name, target, succeeded, error_message, occurred_at
+                 FROM events
+                 ORDER BY occurred_at DESC
+                 LIMIT ?1",
+            )
+            .map_err(registry_error)?;
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                let id_str: String = row.get(0)?;
+                let occurred_at_str: String = row.get(6)?;
+                Ok((
+                    id_str,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, i32>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    occurred_at_str,
+                ))
+            })
+            .map_err(registry_error)?;
+
+        let mut events = Vec::new();
+        for row in rows {
+            let (
+                id_str,
+                event_type,
+                artifact_name,
+                target,
+                succeeded,
+                error_message,
+                occurred_at_str,
+            ) = row.map_err(registry_error)?;
+            let id =
+                Uuid::parse_str(&id_str).map_err(|e| SkillsMgrError::Registry(e.to_string()))?;
+            let occurred_at = DateTime::parse_from_rfc3339(&occurred_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            events.push(RegistryEvent {
+                id,
+                event_type,
+                artifact_name,
+                target,
+                succeeded: succeeded != 0,
+                error_message,
+                occurred_at,
+            });
+        }
+        Ok(events)
+    }
+
+    pub fn stale_installation_count(&self) -> Result<usize> {
+        let mut stmt = self
+            .connection
+            .prepare(
+                "SELECT on_disk_path FROM installations WHERE status = 'installed' OR status = 'enabled'",
+            )
+            .map_err(registry_error)?;
+        let paths: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(registry_error)?
+            .filter_map(|r| r.ok())
+            .collect();
+        let stale = paths
+            .iter()
+            .filter(|p| !std::path::Path::new(p).exists())
+            .count();
+        Ok(stale)
     }
 
     pub fn artifact_by_name(&self, name: &str) -> Result<Option<RegistryArtifact>> {
@@ -415,6 +541,19 @@ impl Registry {
 
                 CREATE UNIQUE INDEX IF NOT EXISTS skill_summaries_lookup
                     ON skill_summaries (skill_name, source_sha256, locale);
+
+                CREATE TABLE IF NOT EXISTS events (
+                    id TEXT PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    artifact_name TEXT,
+                    target TEXT,
+                    succeeded INTEGER NOT NULL,
+                    error_message TEXT,
+                    occurred_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS events_occurred_at
+                    ON events (occurred_at DESC);
                 ",
             )
             .map_err(registry_error)

@@ -18,12 +18,12 @@ use std::sync::Arc;
 use skillsmgr_translate::TranslationManager;
 
 use crate::dto::{
-    CompatibilityReviewDto, ConfirmDraftInstallRequestDto, ErrorDto, ForkPreviewRequestDto,
-    ImportPreviewDto, InstallOutcomeDto, InstallationDto, InventoryDto, LineageDto,
-    NameConflictDto, ReviewConflictDto, ReviewOutcomeDto, RewriteSkillOutcomeDto,
-    RewriteSkillRequestDto, SaveCustomSkillEditRequestDto, SkillDraftPreviewDto,
-    SkillIntentOutcomeDto, SkillSummaryDto, SkillSummaryRequestDto, TargetDto, TranslateConfigDto,
-    TranslateOutcomeDto,
+    build_dashboard, CompatibilityReviewDto, ConfirmDraftInstallRequestDto, DashboardDto, ErrorDto,
+    ForkPreviewRequestDto, ImportPreviewDto, InstallOutcomeDto, InstallationDto, InventoryDto,
+    LineageDto, NameConflictDto, RecentActionDto, ReviewConflictDto, ReviewOutcomeDto,
+    RewriteSkillOutcomeDto, RewriteSkillRequestDto, SaveCustomSkillEditRequestDto,
+    SkillDraftPreviewDto, SkillIntentOutcomeDto, SkillSummaryDto, SkillSummaryRequestDto,
+    TargetDto, TranslateConfigDto, TranslateOutcomeDto,
 };
 use crate::intent;
 use crate::review::{self, SkillSummary};
@@ -43,6 +43,52 @@ pub async fn scan(
     app.emit("scan-complete", &dto)
         .map_err(ErrorDto::internal)?;
     Ok(dto)
+}
+
+#[tauri::command]
+pub async fn get_dashboard(
+    cwd: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<DashboardDto, ErrorDto> {
+    let cwd_path = cwd.as_deref().map(std::path::Path::new);
+    let inventory = state.service.inventory(cwd_path).await;
+    let generated_at = chrono::Utc::now().to_rfc3339();
+
+    state
+        .service
+        .record_event(skillsmgr_registry::RecordEventInput {
+            event_type: "scan".to_string(),
+            artifact_name: None,
+            target: None,
+            succeeded: inventory.errors.is_empty(),
+            error_message: if inventory.errors.is_empty() {
+                None
+            } else {
+                Some(format!("{} scan error(s)", inventory.errors.len()))
+            },
+        })
+        .await;
+
+    let recent_events = state.service.recent_events(10).await;
+    let registry_stale_count = state.service.stale_installation_count().await;
+
+    let recent_actions = recent_events
+        .into_iter()
+        .map(|e| RecentActionDto {
+            event_type: e.event_type,
+            artifact_name: e.artifact_name,
+            target: e.target,
+            occurred_at: e.occurred_at.to_rfc3339(),
+            succeeded: e.succeeded,
+        })
+        .collect();
+
+    Ok(build_dashboard(
+        &inventory,
+        generated_at,
+        recent_actions,
+        registry_stale_count,
+    ))
 }
 
 #[tauri::command]
@@ -575,6 +621,7 @@ pub async fn save_custom_skill_edit(
         version,
         kind: ArtifactKind::Skill,
         source: Source::Unknown,
+        search_aliases: Vec::new(),
         capabilities: Vec::new(),
     };
 
@@ -613,6 +660,16 @@ pub async fn confirm_install_skill_draft(
     app: AppHandle,
 ) -> Result<InstallationDto, ErrorDto> {
     let (installation, artifact) = install_skill_draft_core(&state.service, request).await?;
+    state
+        .service
+        .record_event(skillsmgr_registry::RecordEventInput {
+            event_type: "draft_confirm".to_string(),
+            artifact_name: Some(artifact.name.clone()),
+            target: Some(installation.target.tool_id().to_string()),
+            succeeded: true,
+            error_message: None,
+        })
+        .await;
     spawn_post_install_summary(
         artifact,
         state.translations.clone(),
@@ -688,13 +745,28 @@ pub async fn rewrite_skill_with_llm(
         .await
         .map_err(ErrorDto::from)?;
 
-    compose_rewrite_outcome(
+    let outcome = compose_rewrite_outcome(
         &raw,
         &artifact,
         &review_targets_for_rewrite(),
         config.provider_kind.as_id(),
         &config.model,
-    )
+    );
+    state
+        .service
+        .record_event(skillsmgr_registry::RecordEventInput {
+            event_type: "rewrite_draft".to_string(),
+            artifact_name: Some(artifact.name.clone()),
+            target: None,
+            succeeded: outcome.is_ok(),
+            error_message: if let Err(ref e) = outcome {
+                Some(e.code.clone())
+            } else {
+                None
+            },
+        })
+        .await;
+    outcome
 }
 
 // ── AI skill summary (auto-generated, lazy regenerate) ──────────────────────
@@ -1093,6 +1165,7 @@ fn compose_rewrite_outcome(
         version,
         kind: ArtifactKind::Skill,
         source: original.source.clone(),
+        search_aliases: original.search_aliases.clone(),
         capabilities: original.capabilities.clone(),
     };
 
@@ -1159,6 +1232,7 @@ async fn install_skill_draft_core(
         source: Source::Local {
             path: staged.clone(),
         },
+        search_aliases: Vec::new(),
         capabilities: Vec::new(),
     };
 
@@ -1322,6 +1396,7 @@ fn artifact_from_dto(dto: crate::dto::ArtifactDto) -> Result<skillsmgr_core::Art
         version: dto.version,
         kind,
         source,
+        search_aliases: dto.search_aliases,
         capabilities: dto
             .capabilities
             .into_iter()
@@ -1351,6 +1426,7 @@ fn adapt_skill_for_codex(original: &Artifact) -> Artifact {
         version: original.version.clone(),
         kind: ArtifactKind::Skill,
         source: original.source.clone(),
+        search_aliases: original.search_aliases.clone(),
         capabilities: Vec::new(),
     }
 }
@@ -1379,11 +1455,9 @@ fn adapted_skill_name(name: &str) -> String {
 }
 
 fn adapt_skill_body_for_codex(body: &str) -> String {
-    let mut out = body
-        .replace("Claude Code", "Codex")
-        .replace("Claude", "Codex");
+    let mut out = body.replace("Claude Code", "Codex");
     out = remove_frontmatter_field(&out, "allowed-tools");
-    let note = "\n\n## Codex Adaptation Notes\n\n- This skill was adapted from a Claude Code skill.\n- Claude-specific tool restrictions were converted into guidance; verify commands and permissions before use.\n";
+    let note = "\n\n## Codex Adaptation Notes\n\n- This skill was adapted for Codex as the host tool.\n- `allowed-tools` metadata was removed because Codex may not enforce Claude Code tool restrictions.\n- Model identity language was left unchanged; Codex can run different underlying models, so verify model-specific claims manually.\n";
     if out.contains("## Codex Adaptation Notes") {
         out
     } else {
@@ -1431,9 +1505,43 @@ mod adaptation_tests {
 
         assert_eq!(adapted.name, "review-skill-codex");
         let body = adapted.body.unwrap();
-        assert!(!body.contains("allowed-tools"));
-        assert!(body.contains("Codex"));
-        assert!(body.contains("Codex Adaptation Notes"));
+        assert!(body.contains("## Codex Adaptation Notes"));
+        let (content, notes) = body
+            .split_once("\n\n## Codex Adaptation Notes")
+            .expect("adaptation notes");
+        assert!(!content.contains("allowed-tools"));
+        assert!(content.contains("Codex"));
+        assert!(notes.contains("host tool"));
+    }
+
+    #[test]
+    fn adapt_skill_preserves_model_identity_language() {
+        let artifact = Artifact::new(
+            "Claude Authenticity Check",
+            "Checks whether the current API is an Anthropic Claude model",
+            None,
+            ArtifactKind::Skill,
+            Source::Unknown,
+        )
+        .with_body(Some(
+            "---\nname: claude-authenticity-check\nallowed-tools: Read, Grep\n---\n\
+This skill checks whether the current API is an Anthropic Claude model, \
+an OpenAI GPT model, or a DeepSeek-backed wrapper.\n\
+Codex is the host tool, not the model identity.\n"
+                .into(),
+        ));
+
+        let adapted = adapt_skill_for_codex(&artifact);
+        let body = adapted.body.unwrap();
+        let (content, _) = body
+            .split_once("\n\n## Codex Adaptation Notes")
+            .expect("adaptation notes");
+
+        assert!(!content.contains("allowed-tools"));
+        assert!(content.contains("Anthropic Claude model"));
+        assert!(content.contains("OpenAI GPT model"));
+        assert!(content.contains("DeepSeek-backed wrapper"));
+        assert!(!content.contains("Anthropic Codex model"));
     }
 
     #[test]

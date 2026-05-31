@@ -3208,6 +3208,7 @@ dependencies = [
  "skillsmgr-fetch",
  "skillsmgr-parse",
  "skillsmgr-registry",
+ "skillsmgr-scan",
  "skillsmgr-service",
  "skillsmgr-translate",
  "tauri",
@@ -4925,6 +4926,8 @@ dependencies = [
 name = "skillsmgr-service"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "skillsmgr-adapters",
  "skillsmgr-core",
  "skillsmgr-fetch",

@@ -165,6 +165,7 @@ pub struct Artifact {
     pub version: Option<String>,
     pub kind: ArtifactKind,
     pub source: Source,
+    pub search_aliases: Vec<String>,
     /// Kind-specific. Only `ArtifactKind::Extension` populates this today;
     /// other kinds must leave it empty. See CLAUDE.md "Inventory Information
     /// Architecture".
@@ -187,8 +188,14 @@ impl Artifact {
             version,
             kind,
             source,
+            search_aliases: Vec::new(),
             capabilities: Vec::new(),
         }
+    }
+
+    pub fn with_search_aliases(mut self, search_aliases: Vec<String>) -> Self {
+        self.search_aliases = search_aliases;
+        self
     }
 
     pub fn with_body(mut self, body: Option<String>) -> Self {
@@ -277,6 +284,12 @@ pub trait ToolAdapter: Send + Sync {
     /// shared-only adapters) return `None`.
     fn install_path_for(&self, _scope: &Scope, _name: &str) -> Option<PathBuf> {
         None
+    }
+
+    /// Whether this adapter supports install/uninstall. Defaults to `true`;
+    /// read-only adapters (Hermes, openclaw) override to `false`.
+    fn is_writable(&self) -> bool {
+        true
     }
 }
 

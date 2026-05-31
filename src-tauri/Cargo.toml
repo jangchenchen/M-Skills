@@ -25,6 +25,7 @@ tauri-plugin-log = "2"
 skillsmgr-service = { path = "../crates/skillsmgr-service" }
 skillsmgr-core = { path = "../crates/skillsmgr-core" }
 skillsmgr-fetch = { path = "../crates/skillsmgr-fetch" }
+skillsmgr-scan = { path = "../crates/skillsmgr-scan" }
 skillsmgr-registry = { path = "../crates/skillsmgr-registry" }
 skillsmgr-translate = { path = "../crates/skillsmgr-translate" }
 skillsmgr-parse = { path = "../crates/skillsmgr-parse" }

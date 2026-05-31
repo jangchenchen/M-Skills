@@ -5,7 +5,7 @@ use skillsmgr_core::{
     ensure_target_supports_kind, AdapterPresence, Artifact, ArtifactKind, Installation, Result,
     ScannedInstallation, Scope, SkillsMgrError, Source, SourceProvenance, Target, ToolAdapter,
 };
-use skillsmgr_parse::{parse_gemini_extension_dir, parse_skill_dir};
+use skillsmgr_parse::{parse_flat_skill_file, parse_gemini_extension_dir, parse_skill_dir};
 use tokio::fs;
 use toml_edit::{value, ArrayOfTables, DocumentMut, Item, Table};
 
@@ -18,6 +18,10 @@ pub struct DirectoryLayout {
     target_for_scope: fn(Scope) -> Target,
     roots: Vec<SourceRoot>,
     project_relative_root: PathBuf,
+    /// Directories whose direct `.md` children are flat single-file skills
+    /// (e.g. `~/.claude/commands/`). Always scanned read-only.
+    flat_roots: Vec<SourceRoot>,
+    project_relative_flat_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +63,8 @@ impl DirectoryLayout {
             target_for_scope,
             roots: vec![SourceRoot::owned(global_root)],
             project_relative_root: project_relative_root.into(),
+            flat_roots: Vec::new(),
+            project_relative_flat_root: None,
         }
     }
 
@@ -76,6 +82,8 @@ impl DirectoryLayout {
             target_for_scope,
             roots: vec![SourceRoot::owned(global_root)],
             project_relative_root: project_relative_root.into(),
+            flat_roots: Vec::new(),
+            project_relative_flat_root: None,
         }
     }
 
@@ -93,6 +101,8 @@ impl DirectoryLayout {
             target_for_scope,
             roots: vec![SourceRoot::owned(global_root)],
             project_relative_root: project_relative_root.into(),
+            flat_roots: Vec::new(),
+            project_relative_flat_root: None,
         }
     }
 
@@ -110,7 +120,22 @@ impl DirectoryLayout {
             target_for_scope,
             roots,
             project_relative_root: project_relative_root.into(),
+            flat_roots: Vec::new(),
+            project_relative_flat_root: None,
         }
+    }
+
+    /// Register a flat-file commands directory (e.g. `~/.claude/commands/`).
+    /// Direct `.md` children of `global_path` are scanned as single-file skills.
+    /// Always read-only; does not affect the writable skill root.
+    pub fn with_flat_commands(
+        mut self,
+        global_path: impl Into<PathBuf>,
+        project_relative: impl Into<PathBuf>,
+    ) -> Self {
+        self.flat_roots = vec![SourceRoot::owned(global_path)];
+        self.project_relative_flat_root = Some(project_relative.into());
+        self
     }
 
     pub fn with_config_path(mut self, config_path: impl Into<PathBuf>) -> Self {
@@ -124,6 +149,17 @@ impl DirectoryLayout {
             Scope::Project(project_root) => vec![SourceRoot::owned(
                 project_root.join(&self.project_relative_root),
             )],
+        }
+    }
+
+    fn flat_roots_for_scope(&self, scope: &Scope) -> Vec<SourceRoot> {
+        match scope {
+            Scope::Global => self.flat_roots.clone(),
+            Scope::Project(project_root) => self
+                .project_relative_flat_root
+                .as_ref()
+                .map(|rel| vec![SourceRoot::owned(project_root.join(rel))])
+                .unwrap_or_default(),
         }
     }
 
@@ -195,6 +231,55 @@ impl ToolAdapter for DirectoryLayout {
                 };
 
                 let Ok(candidate) = candidate else {
+                    continue;
+                };
+
+                let installation = Installation::enabled(
+                    &candidate.artifact,
+                    self.target_for_scope(scope.clone()),
+                    &path,
+                );
+                scanned.push(ScannedInstallation {
+                    artifact: candidate.artifact,
+                    installation,
+                    provenance: source_root.provenance.clone(),
+                });
+            }
+        }
+
+        // Flat-file commands (e.g. ~/.claude/commands/*.md)
+        for source_root in self.flat_roots_for_scope(&scope) {
+            let root = source_root.path;
+            if !fs::try_exists(&root)
+                .await
+                .map_err(|source| fs_error(&root, source))?
+            {
+                continue;
+            }
+
+            let mut entries = fs::read_dir(&root)
+                .await
+                .map_err(|source| fs_error(&root, source))?;
+
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .map_err(|source| fs_error(&root, source))?
+            {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                    continue;
+                }
+                if !entry
+                    .file_type()
+                    .await
+                    .map_err(|source| fs_error(&path, source))?
+                    .is_file()
+                {
+                    continue;
+                }
+
+                let Ok(candidate) = parse_flat_skill_file(&path).await else {
                     continue;
                 };
 
@@ -306,8 +391,10 @@ impl ToolAdapter for DirectoryLayout {
     }
 
     async fn detect(&self) -> AdapterPresence {
-        // MVP: Available means at least one configured source directory exists.
-        if self.roots.iter().any(|root| root.path.exists()) {
+        // Available when at least one directory root (skills or commands) exists.
+        let any_exists = self.roots.iter().any(|r| r.path.exists())
+            || self.flat_roots.iter().any(|r| r.path.exists());
+        if any_exists {
             AdapterPresence::Available
         } else {
             AdapterPresence::Missing {
@@ -321,6 +408,10 @@ impl ToolAdapter for DirectoryLayout {
             return None;
         }
         Some(self.owned_root_for_scope(scope).join(name))
+    }
+
+    fn is_writable(&self) -> bool {
+        !self.read_only
     }
 }
 
@@ -670,5 +761,45 @@ mod tests {
                         from_tool: "claude-code".to_string(),
                     }
         }));
+    }
+
+    #[tokio::test]
+    async fn flat_commands_dir_is_scanned_alongside_skills_dir() {
+        let home = tempdir().unwrap();
+        let skills_dir = home.path().join(".claude/skills/my-skill");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: Dir skill\n---\n",
+        )
+        .unwrap();
+
+        let commands_dir = home.path().join(".claude/commands");
+        std::fs::create_dir_all(&commands_dir).unwrap();
+        std::fs::write(
+            commands_dir.join("commit.md"),
+            "# Smart Git Commit\n\nAnalyze and commit.\n",
+        )
+        .unwrap();
+
+        let adapter = super::super::claude_code::adapter(home.path());
+        let scanned = adapter.scan(Scope::Global).await.unwrap();
+
+        let names: Vec<&str> = scanned.iter().map(|s| s.artifact.name.as_str()).collect();
+        assert!(names.contains(&"my-skill"), "dir-based skill missing");
+        assert!(names.contains(&"commit"), "flat command file missing");
+    }
+
+    #[tokio::test]
+    async fn flat_commands_dir_not_present_does_not_error() {
+        let home = tempdir().unwrap();
+        // Only create skills dir, not commands dir
+        std::fs::create_dir_all(home.path().join(".claude/skills")).unwrap();
+
+        let adapter = super::super::claude_code::adapter(home.path());
+        let result = adapter.scan(Scope::Global).await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 }
