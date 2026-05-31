@@ -70,5 +70,6 @@
   "actionType_uninstall": "Uninstalled",
   "actionType_draft_confirm": "Draft confirmed",
   "actionType_rewrite_draft": "Rewrite drafted",
-  "actionFailed": "failed"
+  "actionFailed": "failed",
+  "disableNotSupported": "Enable/disable not supported for this tool"
 }

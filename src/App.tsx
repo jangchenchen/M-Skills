@@ -175,6 +175,7 @@ export function App() {
             <div className="flex-1 overflow-hidden">
               <DetailPanel
                 groups={inventory.groups}
+                adapters={inventory.adapters}
                 selectedName={selectedName}
                 selectedKind={selectedKind}
               />

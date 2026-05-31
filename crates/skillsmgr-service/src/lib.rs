@@ -21,6 +21,7 @@ pub struct AdapterStatus {
     pub presence: AdapterPresence,
     pub supported_kinds: Vec<ArtifactKind>,
     pub writable: bool,
+    pub supports_disable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -369,6 +370,7 @@ fn build_inventory(results: Vec<ScanResult>) -> Inventory {
             presence: result.presence,
             supported_kinds: result.supported_kinds.to_vec(),
             writable: result.writable,
+            supports_disable: result.supports_disable,
         });
         errors.extend(result.errors);
 

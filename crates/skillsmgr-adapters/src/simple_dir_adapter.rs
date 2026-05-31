@@ -413,6 +413,10 @@ impl ToolAdapter for DirectoryLayout {
     fn is_writable(&self) -> bool {
         !self.read_only
     }
+
+    fn supports_disable(&self) -> bool {
+        !self.read_only && self.config_path.is_some()
+    }
 }
 
 impl DirectoryLayout {

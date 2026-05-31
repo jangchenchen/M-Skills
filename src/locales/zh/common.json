@@ -70,5 +70,6 @@
   "actionType_uninstall": "已卸载",
   "actionType_draft_confirm": "草稿已确认",
   "actionType_rewrite_draft": "已生成重写草稿",
-  "actionFailed": "失败"
+  "actionFailed": "失败",
+  "disableNotSupported": "此工具不支持启用/禁用"
 }

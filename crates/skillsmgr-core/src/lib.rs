@@ -291,6 +291,14 @@ pub trait ToolAdapter: Send + Sync {
     fn is_writable(&self) -> bool {
         true
     }
+
+    /// Whether this adapter supports enable/disable via a native config file.
+    /// Only returns `true` when the adapter has a config_path (currently Codex
+    /// only). Other writable adapters return `false` — callers should hide
+    /// enable/disable controls rather than surfacing a ReadOnly error.
+    fn supports_disable(&self) -> bool {
+        false
+    }
 }
 
 pub fn ensure_target_supports_kind(target: &Target, kind: ArtifactKind) -> Result<()> {

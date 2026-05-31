@@ -13,6 +13,7 @@ import type {
   TargetDto,
 } from "../types";
 import { CompatibilityNotice } from "./CompatibilityNotice";
+import { RiskBadge, WarningsSection } from "./AuditNotice";
 
 interface Props {
   initialContent: string;
@@ -292,6 +293,11 @@ function RewritePanel({
           {outcome.compatibilityReviews.length > 0 && (
             <CompatibilityNotice reviews={outcome.compatibilityReviews} />
           )}
+
+          <div className="flex items-center gap-3">
+            <RiskBadge level={outcome.audit.riskLevel} />
+          </div>
+          <WarningsSection warnings={outcome.audit.warnings} />
 
           <div>
             <p className="font-medium text-gray-200 mb-1">

@@ -13,8 +13,6 @@ import {
 import { useErrorMessage } from "../useErrorMessage";
 import type {
   AdapterStatusDto,
-  AuditSeverity,
-  AuditWarningDto,
   ErrorDto,
   ImportCandidateDto,
   ImportPreviewDto,
@@ -26,6 +24,7 @@ import type {
 import { targetLabel } from "../types";
 import { classifySmartAddInput, type SmartAddKind } from "../smartAdd";
 import { CompatibilityNotice } from "./CompatibilityNotice";
+import { isAtLeast, RiskBadge, WarningsSection } from "./AuditNotice";
 
 interface Props {
   onClose: () => void;
@@ -39,11 +38,6 @@ type IntentState = "idle" | "loading" | "ready" | "failed";
 
 function targetKey(t: TargetDto): string {
   return `${t.tool}:${t.scope.type}`;
-}
-
-function isAtLeast(level: AuditSeverity, threshold: AuditSeverity): boolean {
-  const order: Record<AuditSeverity, number> = { low: 0, medium: 1, high: 2 };
-  return order[level] >= order[threshold];
 }
 
 function intersectTargets(
@@ -658,25 +652,14 @@ function PreviewStep({
                   {t("smartAdd.noIntersection")}
                 </p>
               )}
-              <ul className="space-y-1.5">
-                {visibleTargets.map((target) => {
-                  const k = targetKey(target);
-                  const checked = selectedKeys.has(k);
-                  return (
-                    <li key={k}>
-                      <label className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) => onTargetToggle(target, e.target.checked)}
-                          className="accent-indigo-500"
-                        />
-                        <span>{targetLabel(target)}</span>
-                      </label>
-                    </li>
-                  );
-                })}
-              </ul>
+              <TargetPlanTable
+                visibleTargets={visibleTargets}
+                selectedKeys={selectedKeys}
+                candidate={selectedCandidate}
+                reviewState={reviewState}
+                reviewOutcome={reviewOutcome}
+                onTargetToggle={onTargetToggle}
+              />
             </>
           )}
         </div>
@@ -737,6 +720,105 @@ function PreviewStep({
         </button>
       </div>
     </div>
+  );
+}
+
+type TargetRowStatus = "ready" | "conflict" | "incompatible";
+
+function TargetPlanTable({
+  visibleTargets,
+  selectedKeys,
+  candidate,
+  reviewState,
+  reviewOutcome,
+  onTargetToggle,
+}: {
+  visibleTargets: TargetDto[];
+  selectedKeys: Set<string>;
+  candidate: ImportCandidateDto;
+  reviewState: ReviewState;
+  reviewOutcome: ReviewOutcomeDto | null;
+  onTargetToggle: (t: TargetDto, checked: boolean) => void;
+}) {
+  const { t } = useTranslation("wizard");
+
+  return (
+    <ul className="space-y-1.5">
+      {visibleTargets.map((target) => {
+        const k = targetKey(target);
+        const checked = selectedKeys.has(k);
+
+        const incompatible = candidate.compatibilityReviews.some(
+          (r) =>
+            r.status === "incompatible" &&
+            (r.target == null || r.target.tool === target.tool)
+        );
+        const conflict =
+          reviewState === "ready" &&
+          reviewOutcome?.conflicts.some((c) => c.tool === target.tool);
+
+        const status: TargetRowStatus = incompatible
+          ? "incompatible"
+          : conflict
+            ? "conflict"
+            : "ready";
+
+        const statusBadge =
+          status === "incompatible" ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-950 text-red-400 border border-red-900">
+              {t("planStatus.incompatible", { defaultValue: "Incompatible" })}
+            </span>
+          ) : status === "conflict" ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-900">
+              {t("planStatus.conflict", { defaultValue: "Conflict" })}
+            </span>
+          ) : reviewState === "loading" ? (
+            <span className="text-[10px] text-gray-600 animate-pulse">
+              {t("planStatus.checking", { defaultValue: "Checking…" })}
+            </span>
+          ) : (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-900">
+              {t("planStatus.ready", { defaultValue: "Ready" })}
+            </span>
+          );
+
+        const conflictPath = conflict
+          ? reviewOutcome?.conflicts.find((c) => c.tool === target.tool)?.name
+          : undefined;
+
+        return (
+          <li key={k} className="rounded border border-gray-800 px-3 py-2">
+            <label
+              className={`flex items-center justify-between gap-2 ${
+                status === "incompatible"
+                  ? "opacity-40 cursor-not-allowed"
+                  : "cursor-pointer"
+              }`}
+            >
+              <span className="flex items-center gap-2 text-sm text-gray-200">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={status === "incompatible"}
+                  onChange={(e) => onTargetToggle(target, e.target.checked)}
+                  className="accent-indigo-500"
+                />
+                {targetLabel(target)}
+              </span>
+              {statusBadge}
+            </label>
+            {conflictPath && (
+              <p className="mt-1 ml-5 text-[10px] text-amber-500 font-mono break-all">
+                {t("planStatus.conflictWith", {
+                  defaultValue: "Conflicts with: {{name}}",
+                  name: conflictPath,
+                })}
+              </p>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -847,70 +929,6 @@ function camelCaseReason(kind: string): string {
     .split("_")
     .map((seg, i) => (i === 0 ? seg : seg.charAt(0).toUpperCase() + seg.slice(1)))
     .join("");
-}
-
-function RiskBadge({ level }: { level: AuditSeverity }) {
-  const { t } = useTranslation("wizard");
-  const styles: Record<AuditSeverity, string> = {
-    low: "bg-emerald-950 text-emerald-300 border-emerald-900",
-    medium: "bg-amber-950 text-amber-300 border-amber-900",
-    high: "bg-red-950 text-red-300 border-red-900",
-  };
-  return (
-    <div
-      className={`inline-flex items-center gap-2 px-3 py-1 rounded border text-xs font-medium ${styles[level]}`}
-    >
-      <span className="uppercase tracking-wide">{t("riskBadge")}</span>
-      <span>{t(`risk.${level}`)}</span>
-    </div>
-  );
-}
-
-function WarningsSection({ warnings }: { warnings: AuditWarningDto[] }) {
-  const { t } = useTranslation("wizard");
-  if (warnings.length === 0) return null;
-
-  const buckets: Record<AuditSeverity, AuditWarningDto[]> = {
-    high: warnings.filter((w) => w.severity === "high"),
-    medium: warnings.filter((w) => w.severity === "medium"),
-    low: warnings.filter((w) => w.severity === "low"),
-  };
-  const bucketStyles: Record<AuditSeverity, string> = {
-    high: "bg-red-950/40 border-red-900/60 text-red-300",
-    medium: "bg-amber-950/30 border-amber-900/50 text-amber-300",
-    low: "bg-gray-900/40 border-gray-800 text-gray-400",
-  };
-
-  return (
-    <div className="space-y-2">
-      {(["high", "medium", "low"] as AuditSeverity[]).map((sev) =>
-        buckets[sev].length === 0 ? null : (
-          <div
-            key={sev}
-            className={`rounded border px-3 py-2 ${bucketStyles[sev]}`}
-          >
-            <p className="text-xs font-semibold mb-1">
-              {t(`severity.${sev}`)} ({buckets[sev].length})
-            </p>
-            <ul className="space-y-1">
-              {buckets[sev].map((w, i) => (
-                <li key={i} className="text-xs">
-                  <span className="font-mono opacity-80">
-                    {w.path || "(total)"}
-                  </span>{" "}
-                  — [{t(`warningKind.${camelCaseKind(w.kind)}`)}] {w.message}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )
-      )}
-    </div>
-  );
-}
-
-function camelCaseKind(kind: AuditWarningDto["kind"]): string {
-  return kind.charAt(0).toLowerCase() + kind.slice(1);
 }
 
 function DoneStep({

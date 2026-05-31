@@ -76,6 +76,7 @@ export interface AdapterStatusDto {
   presence: PresenceDto;
   supportedKinds: ArtifactKind[];
   writable: boolean;
+  supportsDisable: boolean;
 }
 
 // ── Dashboard (Issue 014) ─────────────────────────────────────────────────────
@@ -318,6 +319,7 @@ export interface SkillDraftPreviewDto {
   lineage: LineageDto;
   compatibilityReviews: CompatibilityReviewDto[];
   nameConflict?: NameConflictDto;
+  audit: ImportAuditDto;
 }
 
 export interface ForkPreviewRequest {
@@ -365,6 +367,7 @@ export interface RewriteSkillOutcomeDto {
   providerKind: string;
   model: string;
   compatibilityReviews: CompatibilityReviewDto[];
+  audit: ImportAuditDto;
 }
 
 // ── Issue 011: Smart Add natural-language intent ─────────────────────────────

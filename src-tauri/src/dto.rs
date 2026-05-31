@@ -168,6 +168,7 @@ pub struct SkillDraftPreviewDto {
     pub compatibility_reviews: Vec<CompatibilityReviewDto>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub name_conflict: Option<NameConflictDto>,
+    pub audit: ImportAuditDto,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,6 +218,7 @@ pub struct RewriteSkillOutcomeDto {
     pub provider_kind: String,
     pub model: String,
     pub compatibility_reviews: Vec<CompatibilityReviewDto>,
+    pub audit: ImportAuditDto,
 }
 
 // ── Smart Add intent (Issue 011) ─────────────────────────────────────────────
@@ -398,6 +400,7 @@ pub struct AdapterStatusDto {
     pub presence: PresenceDto,
     pub supported_kinds: Vec<String>,
     pub writable: bool,
+    pub supports_disable: bool,
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -811,6 +814,7 @@ impl From<&AdapterStatus> for AdapterStatusDto {
             },
             supported_kinds: s.supported_kinds.iter().map(|k| kind_str(*k)).collect(),
             writable: s.writable,
+            supports_disable: s.supports_disable,
         }
     }
 }
@@ -1197,12 +1201,14 @@ mod tests {
                     presence: AdapterPresence::Available,
                     supported_kinds: vec![ArtifactKind::Skill],
                     writable: true,
+                    supports_disable: false,
                 },
                 AdapterStatus {
                     adapter_id: "gemini".to_string(),
                     presence: AdapterPresence::Available,
                     supported_kinds: vec![ArtifactKind::Extension],
                     writable: false,
+                    supports_disable: false,
                 },
             ],
             errors: Vec::new(),
@@ -1230,6 +1236,7 @@ mod tests {
                 presence: AdapterPresence::Available,
                 supported_kinds: vec![ArtifactKind::Skill],
                 writable: true,
+                supports_disable: false,
             }],
             errors: vec![ScanError {
                 adapter_id: "claude-code".to_string(),
@@ -1258,6 +1265,7 @@ mod tests {
                 presence: AdapterPresence::Available,
                 supported_kinds: vec![ArtifactKind::Skill],
                 writable: false,
+                supports_disable: false,
             }],
             errors: Vec::new(),
         };
@@ -1335,6 +1343,7 @@ mod tests {
                 presence: AdapterPresence::Available,
                 supported_kinds: vec![ArtifactKind::Skill],
                 writable: true,
+                supports_disable: false,
             }],
             errors: Vec::new(),
         };

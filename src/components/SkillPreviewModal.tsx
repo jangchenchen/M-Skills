@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { diffLines } from "diff";
 import type { SkillDraftMode, SkillDraftPreviewDto } from "../types";
 import { CompatibilityNotice } from "./CompatibilityNotice";
+import { isAtLeast, RiskBadge, WarningsSection } from "./AuditNotice";
 
 interface Props {
   mode: SkillDraftMode;
@@ -24,6 +25,7 @@ export function SkillPreviewModal({
   const { t } = useTranslation("artifact");
   const [name, setName] = useState(preview.adaptedName);
   const [showRaw, setShowRaw] = useState(false);
+  const [riskAck, setRiskAck] = useState(false);
 
   const conflict = preview.nameConflict;
   const conflictUnresolved =
@@ -32,6 +34,8 @@ export function SkillPreviewModal({
   const incompatible = preview.compatibilityReviews.some(
     (r) => r.status === "incompatible"
   );
+
+  const requireRiskAck = isAtLeast(preview.audit.riskLevel, "medium");
 
   const titleKey =
     mode === "adapt"
@@ -65,7 +69,11 @@ export function SkillPreviewModal({
 
   const noChanges = diff.every((part) => !part.added && !part.removed);
 
-  const canConfirm = !busy && !conflictUnresolved && !incompatible;
+  const canConfirm =
+    !busy &&
+    !conflictUnresolved &&
+    !incompatible &&
+    !(requireRiskAck && !riskAck);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -95,6 +103,25 @@ export function SkillPreviewModal({
           />
 
           <CompatibilityNotice reviews={preview.compatibilityReviews} />
+
+          <div className="flex items-center gap-3">
+            <RiskBadge level={preview.audit.riskLevel} />
+          </div>
+          <WarningsSection warnings={preview.audit.warnings} />
+          {requireRiskAck && (
+            <label className="flex items-center gap-2 text-xs text-amber-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={riskAck}
+                onChange={(e) => setRiskAck(e.target.checked)}
+                className="accent-amber-400"
+              />
+              {t("riskAck", {
+                defaultValue:
+                  "I have reviewed the warnings and accept the risk",
+              })}
+            </label>
+          )}
 
           <DiffView diff={diff} noChanges={noChanges} />
 

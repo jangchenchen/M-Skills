@@ -19,11 +19,11 @@ use skillsmgr_translate::TranslationManager;
 
 use crate::dto::{
     build_dashboard, CompatibilityReviewDto, ConfirmDraftInstallRequestDto, DashboardDto, ErrorDto,
-    ForkPreviewRequestDto, ImportPreviewDto, InstallOutcomeDto, InstallationDto, InventoryDto,
-    LineageDto, NameConflictDto, RecentActionDto, ReviewConflictDto, ReviewOutcomeDto,
-    RewriteSkillOutcomeDto, RewriteSkillRequestDto, SaveCustomSkillEditRequestDto,
-    SkillDraftPreviewDto, SkillIntentOutcomeDto, SkillSummaryDto, SkillSummaryRequestDto,
-    TargetDto, TranslateConfigDto, TranslateOutcomeDto,
+    ForkPreviewRequestDto, ImportAuditDto, ImportPreviewDto, InstallOutcomeDto, InstallationDto,
+    InventoryDto, LineageDto, NameConflictDto, RecentActionDto, ReviewConflictDto,
+    ReviewOutcomeDto, RewriteSkillOutcomeDto, RewriteSkillRequestDto,
+    SaveCustomSkillEditRequestDto, SkillDraftPreviewDto, SkillIntentOutcomeDto, SkillSummaryDto,
+    SkillSummaryRequestDto, TargetDto, TranslateConfigDto, TranslateOutcomeDto,
 };
 use crate::intent;
 use crate::review::{self, SkillSummary};
@@ -638,6 +638,7 @@ pub async fn save_custom_skill_edit(
             .collect();
 
     let name_conflict = probe_name_conflict(&state.service, &target, &name).await;
+    let audit = ImportAuditDto::from(&skillsmgr_fetch::audit_skill_body(&request.content));
 
     Ok(SkillDraftPreviewDto {
         original_name: request.lineage.parent_name.clone(),
@@ -650,6 +651,7 @@ pub async fn save_custom_skill_edit(
         lineage: request.lineage,
         compatibility_reviews,
         name_conflict,
+        audit,
     })
 }
 
@@ -1174,6 +1176,8 @@ fn compose_rewrite_outcome(
         .map(CompatibilityReviewDto::from)
         .collect();
 
+    let audit = ImportAuditDto::from(&skillsmgr_fetch::audit_skill_body(&outcome.draft_body));
+
     Ok(RewriteSkillOutcomeDto {
         draft_body: outcome.draft_body,
         summary: outcome.summary,
@@ -1181,6 +1185,7 @@ fn compose_rewrite_outcome(
         provider_kind: provider_kind.to_string(),
         model: model.to_string(),
         compatibility_reviews,
+        audit,
     })
 }
 
@@ -1293,6 +1298,8 @@ async fn build_draft_preview(
 
     let name_conflict = probe_name_conflict(service, target, &adapted.name).await;
 
+    let audit = ImportAuditDto::from(&skillsmgr_fetch::audit_skill_body(&adapted_content));
+
     Ok(SkillDraftPreviewDto {
         original_name: original.name.clone(),
         original_content,
@@ -1304,6 +1311,7 @@ async fn build_draft_preview(
         lineage,
         compatibility_reviews,
         name_conflict,
+        audit,
     })
 }
 

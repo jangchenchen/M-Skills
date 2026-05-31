@@ -14,6 +14,7 @@ import { disable, enable, uninstall } from "../api";
 import { reviewArtifactCompatibility } from "../api";
 import { useErrorMessage } from "../useErrorMessage";
 import type {
+  AdapterStatusDto,
   ArtifactDto,
   ArtifactGroupDto,
   ArtifactKind,
@@ -53,6 +54,7 @@ const TRANSLATE_FILE = "SKILL.md";
 
 interface Props {
   groups: ArtifactGroupDto[];
+  adapters: AdapterStatusDto[];
   selectedName: string | null;
   selectedKind: ArtifactKind | null;
 }
@@ -80,7 +82,7 @@ function matchesTranslateLocale(language: string | undefined) {
   );
 }
 
-export function DetailPanel({ groups, selectedName, selectedKind }: Props) {
+export function DetailPanel({ groups, adapters, selectedName, selectedKind }: Props) {
   const qc = useQueryClient();
   const { i18n } = useTranslation();
   const { t } = useTranslation("common");
@@ -582,6 +584,11 @@ export function DetailPanel({ groups, selectedName, selectedKind }: Props) {
               <InstallationRow
                 key={si.installation.id}
                 si={si}
+                supportsDisable={
+                  adapters.find(
+                    (a) => a.adapterId === si.installation.target.tool
+                  )?.supportsDisable ?? false
+                }
                 onUninstall={() => uninstallMut.mutate(si.installation)}
                 onEnable={() => enableMut.mutate(si.installation)}
                 onDisable={() => disableMut.mutate(si.installation)}
@@ -927,6 +934,7 @@ async function sha256Hex(input: string): Promise<string> {
 
 function InstallationRow({
   si,
+  supportsDisable,
   onUninstall,
   onEnable,
   onDisable,
@@ -934,6 +942,7 @@ function InstallationRow({
   busy,
 }: {
   si: ScannedInstallationDto;
+  supportsDisable: boolean;
   onUninstall: () => void;
   onEnable: () => void;
   onDisable: () => void;
@@ -966,14 +975,22 @@ function InstallationRow({
       </div>
       <p className="mt-1 text-gray-500 break-all">{installation.onDiskPath}</p>
       <div className="mt-2 flex gap-2 flex-wrap">
-        {isDisabled ? (
-          <ActionButton onClick={onEnable} disabled={busy}>
-            {t("enable")}
-          </ActionButton>
+        {supportsDisable ? (
+          isDisabled ? (
+            <ActionButton onClick={onEnable} disabled={busy}>
+              {t("enable")}
+            </ActionButton>
+          ) : (
+            <ActionButton onClick={onDisable} disabled={busy}>
+              {t("disable")}
+            </ActionButton>
+          )
         ) : (
-          <ActionButton onClick={onDisable} disabled={busy}>
-            {t("disable")}
-          </ActionButton>
+          <span className="text-gray-600 italic">
+            {t("disableNotSupported", {
+              defaultValue: "Enable/disable not supported",
+            })}
+          </span>
         )}
         {isFork && onEdit && (
           <ActionButton onClick={onEdit} disabled={busy}>
