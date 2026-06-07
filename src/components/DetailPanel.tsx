@@ -405,9 +405,10 @@ export function DetailPanel({ groups, adapters, selectedName, selectedKind }: Pr
 
       <Section title={t("source")}>
         {group.installations[0] ? (
-          <p className="text-xs text-gray-400 break-all">
-            {sourceLabel(group.installations[0].artifact.source)}
-          </p>
+          <SourceProvenance
+            lineage={group.installations[0].artifact.lineage}
+            scannedSource={group.installations[0].artifact.source}
+          />
         ) : (
           <p className="text-xs text-gray-600">{t("unknown")}</p>
         )}
@@ -709,6 +710,52 @@ function adaptationIsCurrent(
     installations.some(
       (si) => si.artifact.lineage?.sourceHash === currentSourceHash
     )
+  );
+}
+
+function SourceProvenance({
+  lineage,
+  scannedSource,
+}: {
+  lineage?: LineageDto;
+  scannedSource: ArtifactDto["source"];
+}) {
+  const { t } = useTranslation("artifact");
+  let label: string;
+  if (!lineage) {
+    label = t("provenance.unknown");
+  } else if (lineage.sourceKind === "market") {
+    label = lineage.providerId
+      ? t(`provenance.provider.${lineage.providerId}`, {
+          defaultValue: t("provenance.market"),
+        })
+      : t("provenance.market");
+  } else {
+    label = t(`provenance.${lineage.sourceKind}`, {
+      defaultValue: t("provenance.unknown"),
+    });
+  }
+  // No sidecar → amber "source unknown"; known provenance → neutral pill.
+  const tone = lineage
+    ? "text-gray-300 ring-gray-600"
+    : "text-amber-300 ring-amber-500/40";
+  return (
+    <div className="space-y-1">
+      <span
+        className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${tone}`}
+      >
+        {label}
+      </span>
+      {lineage?.sourceUrl && (
+        <p className="text-xs text-gray-400 break-all">
+          {lineage.sourceUrl}
+          {lineage.sourceRev && (
+            <span className="text-gray-600"> @ {lineage.sourceRev.slice(0, 8)}</span>
+          )}
+        </p>
+      )}
+      <p className="text-xs text-gray-600 break-all">{sourceLabel(scannedSource)}</p>
+    </div>
   );
 }
 

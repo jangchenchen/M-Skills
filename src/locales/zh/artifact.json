@@ -92,6 +92,20 @@
     "forkedFrom": "Fork 自",
     "sha": "源 SHA"
   },
+  "provenance": {
+    "unknown": "来源未知",
+    "market": "来自市场",
+    "github": "来自 GitHub",
+    "url": "来自 URL",
+    "local": "本地导入",
+    "fork": "派生",
+    "adaptation": "适配",
+    "edit": "编辑",
+    "provider": {
+      "skillsmd": "来自 SkillsMD",
+      "agent-skills-index": "来自 Agent Skills Index"
+    }
+  },
   "translate": "翻译",
   "retranslate": "重新翻译",
   "translating": "翻译中…",

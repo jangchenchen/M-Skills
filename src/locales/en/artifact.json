@@ -92,6 +92,20 @@
     "forkedFrom": "Forked from",
     "sha": "Source SHA"
   },
+  "provenance": {
+    "unknown": "Source unknown",
+    "market": "From market",
+    "github": "From GitHub",
+    "url": "From URL",
+    "local": "Local import",
+    "fork": "Forked",
+    "adaptation": "Adapted",
+    "edit": "Edited",
+    "provider": {
+      "skillsmd": "From SkillsMD",
+      "agent-skills-index": "From Agent Skills Index"
+    }
+  },
   "translate": "Translate",
   "retranslate": "Retranslate",
   "translating": "Translating…",
