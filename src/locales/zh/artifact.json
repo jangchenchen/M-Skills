@@ -94,10 +94,12 @@
   },
   "provenance": {
     "unknown": "来源未知",
+    "unknownHint": "在来源追踪之前安装，或在 M-Skills 之外导入。",
+    "fetchedAt": "获取时间",
     "market": "来自市场",
     "github": "来自 GitHub",
     "url": "来自 URL",
-    "local": "本地导入",
+    "local": "来自本地路径",
     "fork": "派生",
     "adaptation": "适配",
     "edit": "编辑",

@@ -94,10 +94,12 @@
   },
   "provenance": {
     "unknown": "Source unknown",
+    "unknownHint": "Installed before source tracking, or imported outside M-Skills.",
+    "fetchedAt": "Fetched",
     "market": "From market",
     "github": "From GitHub",
     "url": "From URL",
-    "local": "Local import",
+    "local": "From local path",
     "fork": "Forked",
     "adaptation": "Adapted",
     "edit": "Edited",

@@ -405,10 +405,7 @@ export function DetailPanel({ groups, adapters, selectedName, selectedKind }: Pr
 
       <Section title={t("source")}>
         {group.installations[0] ? (
-          <SourceProvenance
-            lineage={group.installations[0].artifact.lineage}
-            scannedSource={group.installations[0].artifact.source}
-          />
+          <SourceProvenance installations={group.installations} />
         ) : (
           <p className="text-xs text-gray-600">{t("unknown")}</p>
         )}
@@ -714,13 +711,17 @@ function adaptationIsCurrent(
 }
 
 function SourceProvenance({
-  lineage,
-  scannedSource,
+  installations,
 }: {
-  lineage?: LineageDto;
-  scannedSource: ArtifactDto["source"];
+  installations: ScannedInstallationDto[];
 }) {
   const { t } = useTranslation("artifact");
+  // Prefer an installation that actually carries a lineage sidecar, so a
+  // multi-tool skill shows its real source rather than whichever scan happened
+  // to land at index 0.
+  const best = installations.find((i) => i.artifact.lineage) ?? installations[0];
+  const lineage = best.artifact.lineage;
+
   let label: string;
   if (!lineage) {
     label = t("provenance.unknown");
@@ -735,14 +736,29 @@ function SourceProvenance({
       defaultValue: t("provenance.unknown"),
     });
   }
+
+  // Hover reveals the full provenance the pill summarises.
+  const tooltip = lineage
+    ? [
+        lineage.externalId,
+        lineage.sourceUrl,
+        lineage.sourceRev && `rev ${lineage.sourceRev.slice(0, 12)}`,
+        lineage.fetchedAt && `${t("provenance.fetchedAt")}: ${lineage.fetchedAt}`,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : t("provenance.unknownHint");
+
   // No sidecar → amber "source unknown"; known provenance → neutral pill.
   const tone = lineage
     ? "text-gray-300 ring-gray-600"
     : "text-amber-300 ring-amber-500/40";
+
   return (
     <div className="space-y-1">
       <span
-        className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${tone}`}
+        title={tooltip || undefined}
+        className={`inline-block cursor-default rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${tone}`}
       >
         {label}
       </span>
@@ -754,7 +770,9 @@ function SourceProvenance({
           )}
         </p>
       )}
-      <p className="text-xs text-gray-600 break-all">{sourceLabel(scannedSource)}</p>
+      <p className="text-xs text-gray-600 break-all">
+        {sourceLabel(best.artifact.source)}
+      </p>
     </div>
   );
 }
