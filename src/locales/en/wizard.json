@@ -39,6 +39,39 @@
     "promptInjection": "Prompt injection",
     "largePayload": "Large payload"
   },
+  "warningExplain": {
+    "DangerousShellPattern": {
+      "pipeShell": "This skill downloads remote code and runs it directly in your shell — if the source is compromised, any command could execute on your machine.",
+      "rmRf": "This skill permanently deletes files. A wrong path could wipe your documents or entire home directory.",
+      "sudo": "This skill runs commands as administrator, bypassing all your system's security protections.",
+      "eval": "This skill dynamically constructs and runs commands at runtime. The AI could be tricked into executing something harmful.",
+      "base64": "This skill decodes hidden content at runtime — its real behavior may not be visible in the source code.",
+      "chmod": "This skill makes files executable, creating programs that can run on your machine without further permission.",
+      "_default": "This skill contains shell patterns that could damage your files or system."
+    },
+    "PromptInjection": {
+      "tokenMarker": "This skill contains a raw model token marker that could hijack the AI's instruction stream and make it follow attacker-controlled instructions.",
+      "ignoreEn": "This skill tries to make the AI forget its safety rules. If it works, the AI could ignore all protections and follow harmful instructions.",
+      "ignoreZh": "This skill tries to make the AI forget its safety rules (Chinese-language override). If it works, the AI could ignore all protections.",
+      "jailbreak": "This skill contains an explicit jailbreak attempt — it is trying to bypass the AI's safety guardrails.",
+      "systemPrompt": "This skill contains a system-prompt override that could replace the AI's core instructions with attacker-controlled ones.",
+      "_default": "This skill contains patterns that may trick the AI into ignoring its safety rules."
+    },
+    "ExecutableCommand": {
+      "executableFile": "This file can run programs on your machine. Shell scripts, build files, and package configs may execute code during installation or when the skill is used.",
+      "_default": "This file contains runnable commands that the AI may execute on your machine."
+    },
+    "McpConfig": {
+      "mcpServer": "This file configures MCP server connections. MCP servers can access your filesystem, run commands, or connect to external services on behalf of the AI.",
+      "_default": "This file sets up an external server connection that the AI can use to perform actions."
+    },
+    "LargePayload": {
+      "singleFile": "This file is unusually large for a skill. Large files may hide content or indicate the skill does more than expected.",
+      "totalSize": "The total package is unusually large. It may contain hidden content or bundled programs beyond what a typical skill needs.",
+      "_default": "This skill's file size is unusually large, which may indicate hidden or unexpected content."
+    }
+  },
+  "warningEvidence": "Evidence",
   "review": {
     "title": "AI compatibility review",
     "loading": "Analyzing compatibility…",
@@ -72,11 +105,19 @@
     "askAi": {
       "unconfigured": "Ask AI is not configured. Set up an OpenAI-compatible provider in Settings to describe skills in natural language.",
       "openSettings": "Open Settings",
-      "ready": "Ask AI will classify the request and extract a search query. It will not install or write anything.",
+      "ready": "Ask AI will classify the request, extract a search query, and search curated registries before falling back to GitHub. It will not install or write anything.",
       "classify": "Classify",
       "classifying": "Classifying request…",
       "notInstall": "Not an install request",
-      "searchQuery": "Search query"
+      "searchQuery": "Search query",
+      "searching": "Searching curated registries…",
+      "searchResults": "Skills found in curated registries",
+      "fallbackResults": "No curated market match. Showing GitHub fallback",
+      "githubFallback": "GitHub fallback",
+      "noResults": "No matching skills found in curated registries or GitHub. Try pasting a URL directly above.",
+      "searchFailed": "Search failed. Try pasting a URL directly above.",
+      "previewThis": "Preview",
+      "manualHint": "Or paste a GitHub URL above to import directly."
     },
     "submitGate": {
       "needTarget": "Select at least one target tool above to continue.",

@@ -32,6 +32,7 @@ skillsmgr-parse = { path = "../crates/skillsmgr-parse" }
 uuid = { version = "1", features = ["serde", "v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = { workspace = true }
+reqwest = { workspace = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]

@@ -6,14 +6,17 @@ import {
 } from "../skillCategories";
 import type { AdapterStatusDto, ArtifactKind } from "../types";
 
+export type SidebarView = "dashboard" | "library" | "market";
+
 interface Props {
   adapters: AdapterStatusDto[];
   skillCategoryCounts: SkillCategoryCounts;
   selectedKind: ArtifactKind | null;
   selectedSkillCategory: SkillCategoryId;
   selectedTool: string | null;
-  showDashboard: boolean;
+  activeView: SidebarView;
   onDashboardSelect: () => void;
+  onMarketSelect: () => void;
   onKindSelect: (kind: ArtifactKind | null) => void;
   onSkillCategorySelect: (category: SkillCategoryId) => void;
   onImportClick: () => void;
@@ -28,8 +31,9 @@ export function Sidebar({
   selectedKind,
   selectedSkillCategory,
   selectedTool,
-  showDashboard,
+  activeView,
   onDashboardSelect,
+  onMarketSelect,
   onKindSelect,
   onSkillCategorySelect,
   onImportClick,
@@ -72,7 +76,7 @@ export function Sidebar({
         <button
           onClick={onDashboardSelect}
           className={`w-full text-left px-3 py-2 rounded text-sm ${
-            showDashboard
+            activeView === "dashboard"
               ? "bg-indigo-600 text-white"
               : "text-gray-300 hover:bg-gray-800"
           }`}
@@ -82,12 +86,24 @@ export function Sidebar({
         <button
           onClick={() => onKindSelect(null)}
           className={`w-full text-left px-3 py-2 rounded text-sm ${
-            !showDashboard && selectedKind === null && selectedTool === null
+            activeView === "library" &&
+            selectedKind === null &&
+            selectedTool === null
               ? "bg-indigo-600 text-white"
               : "text-gray-300 hover:bg-gray-800"
           }`}
         >
           {t("allArtifacts")}
+        </button>
+        <button
+          onClick={onMarketSelect}
+          className={`w-full text-left px-3 py-2 rounded text-sm ${
+            activeView === "market"
+              ? "bg-indigo-600 text-white"
+              : "text-gray-300 hover:bg-gray-800"
+          }`}
+        >
+          {t("skillsMarket")}
         </button>
         {KINDS.map((k) =>
           k === "Skill" ? (
@@ -95,7 +111,7 @@ export function Sidebar({
               <button
                 onClick={() => onSkillCategorySelect("all")}
                 className={`flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm ${
-                  !showDashboard &&
+                  activeView === "library" &&
                   selectedKind === "Skill" &&
                   selectedSkillCategory === "all"
                     ? "bg-indigo-600 text-white"
@@ -110,23 +126,23 @@ export function Sidebar({
               {skillCategoryCounts.all > 0 && (
                 <div className="ml-3 space-y-0.5 border-l border-gray-800 pl-2">
                   {SKILL_CATEGORY_MENU_IDS.map((category) => (
-                      <button
-                        key={category}
-                        onClick={() => onSkillCategorySelect(category)}
-                        className={`flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs ${
-                        !showDashboard &&
+                    <button
+                      key={category}
+                      onClick={() => onSkillCategorySelect(category)}
+                      className={`flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs ${
+                        activeView === "library" &&
                         selectedKind === "Skill" &&
                         selectedSkillCategory === category
                           ? "bg-gray-800 text-gray-100"
                           : "text-gray-500 hover:bg-gray-800/70 hover:text-gray-300"
                       }`}
-                      >
-                        <span className="truncate">
+                    >
+                      <span className="truncate">
                         {t(`skillCategory.${category}`)}
-                        </span>
-                        <span className="ml-2 flex-none tabular-nums opacity-70">
-                          {skillCategoryCounts[category]}
-                        </span>
+                      </span>
+                      <span className="ml-2 flex-none tabular-nums opacity-70">
+                        {skillCategoryCounts[category]}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -137,7 +153,7 @@ export function Sidebar({
               key={k}
               onClick={() => onKindSelect(k)}
               className={`w-full text-left px-3 py-2 rounded text-sm ${
-                !showDashboard && selectedKind === k
+                activeView === "library" && selectedKind === k
                   ? "bg-indigo-600 text-white"
                   : "text-gray-300 hover:bg-gray-800"
               }`}

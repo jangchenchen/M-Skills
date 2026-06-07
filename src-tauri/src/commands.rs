@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use skillsmgr_core::{Artifact, ArtifactKind, Installation, Scope, Source, Status, Target};
-use skillsmgr_fetch::ImportPreview;
+use skillsmgr_fetch::{ImportPreview, ImportSource};
 use skillsmgr_parse::parse_skill_markdown_str;
 use skillsmgr_translate::{
     build_providers, keyring_store, OpenAICompatProvider, ProviderKind, TranslationProvider,
@@ -19,16 +19,19 @@ use skillsmgr_translate::TranslationManager;
 
 use crate::dto::{
     build_dashboard, CompatibilityReviewDto, ConfirmDraftInstallRequestDto, DashboardDto, ErrorDto,
-    ForkPreviewRequestDto, ImportAuditDto, ImportPreviewDto, InstallOutcomeDto, InstallationDto,
-    InventoryDto, LineageDto, NameConflictDto, RecentActionDto, ReviewConflictDto,
-    ReviewOutcomeDto, RewriteSkillOutcomeDto, RewriteSkillRequestDto,
-    SaveCustomSkillEditRequestDto, SkillDraftPreviewDto, SkillIntentOutcomeDto, SkillSummaryDto,
-    SkillSummaryRequestDto, TargetDto, TranslateConfigDto, TranslateOutcomeDto,
+    ForkPreviewRequestDto, GitHubSkillResultDto, ImportAuditDto, ImportPreviewDto,
+    InstallOutcomeDto, InstallationDto, InventoryDto, LineageDto, MarketPreviewRequestDto,
+    MarketProviderErrorDto, MarketSearchRequestDto, MarketSearchResultDto, MarketSkillCandidateDto,
+    NameConflictDto, RecentActionDto, ReviewConflictDto, ReviewOutcomeDto, RewriteSkillOutcomeDto,
+    RewriteSkillRequestDto, SaveCustomSkillEditRequestDto, SkillDraftPreviewDto,
+    SkillIntentOutcomeDto, SkillSummaryDto, SkillSummaryRequestDto, SnapshotDto, TargetDto,
+    TelemetryDto, TelemetryReasonDto, TelemetryTargetDto, TranslateConfigDto, TranslateOutcomeDto,
+    UpdateStatusDto,
 };
 use crate::intent;
 use crate::review::{self, SkillSummary};
 use crate::rewrite;
-use crate::state::AppState;
+use crate::state::{AppState, MarketOrigin};
 use crate::summary;
 
 #[tauri::command]
@@ -66,6 +69,7 @@ pub async fn get_dashboard(
             } else {
                 Some(format!("{} scan error(s)", inventory.errors.len()))
             },
+            metadata_json: None,
         })
         .await;
 
@@ -89,6 +93,332 @@ pub async fn get_dashboard(
         recent_actions,
         registry_stale_count,
     ))
+}
+
+#[tauri::command]
+pub async fn get_telemetry(
+    period: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<TelemetryDto, ErrorDto> {
+    let (period_label, since) = match period.as_deref() {
+        Some("7d") | None => (
+            "last_7d".to_string(),
+            chrono::Utc::now() - chrono::Duration::days(7),
+        ),
+        Some("30d") => (
+            "last_30d".to_string(),
+            chrono::Utc::now() - chrono::Duration::days(30),
+        ),
+        Some("all") => (
+            "all_time".to_string(),
+            chrono::DateTime::<chrono::Utc>::MIN_UTC,
+        ),
+        Some(other) => {
+            return Err(ErrorDto {
+                code: "invalidPeriod".into(),
+                params: [("period".into(), other.to_string())].into(),
+            })
+        }
+    };
+
+    let type_counts = state.service.event_counts_by_type(since).await;
+    let target_counts = state.service.event_counts_by_target(since).await;
+    let failure_reasons = state.service.failure_reasons(since, 10).await;
+
+    let count_for = |event_type: &str| -> usize {
+        type_counts
+            .iter()
+            .filter(|(t, _)| t == event_type)
+            .map(|(_, c)| *c)
+            .sum()
+    };
+
+    let scan_count = count_for("scan");
+    let install_count = count_for("install");
+    let uninstall_count = count_for("uninstall");
+    let adaptation_count = count_for("draft_confirm");
+    let failure_count: usize = type_counts
+        .iter()
+        .map(|(_, _)| 0usize)
+        .sum::<usize>()
+        .max(failure_reasons.iter().map(|(_, c)| *c).sum());
+
+    Ok(TelemetryDto {
+        period_label,
+        scan_count,
+        install_count,
+        uninstall_count,
+        adaptation_count,
+        failure_count,
+        top_failure_reasons: failure_reasons
+            .into_iter()
+            .map(|(reason, count)| TelemetryReasonDto { reason, count })
+            .collect(),
+        target_distribution: target_counts
+            .into_iter()
+            .map(|(target, count)| TelemetryTargetDto { target, count })
+            .collect(),
+        risk_distribution: vec![],
+    })
+}
+
+// ── Update Detection + Rollback ─────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn check_for_updates(
+    installation: InstallationDto,
+    state: State<'_, AppState>,
+) -> Result<UpdateStatusDto, ErrorDto> {
+    let inst = installation_from_dto(installation)?;
+    let skill_md = inst.on_disk_path.join("SKILL.md");
+
+    let current_sha = if skill_md.exists() {
+        let content = std::fs::read_to_string(&skill_md).map_err(ErrorDto::internal)?;
+        Some(sha256_hex(&content))
+    } else {
+        None
+    };
+
+    let snapshots = state.service.snapshots_for_installation(inst.id).await;
+
+    let stored_source = state.service.source_for_artifact(inst.artifact_id).await;
+
+    let (status, upstream_rev, stored_rev) = match stored_source {
+        Some(source) => match source {
+            skillsmgr_core::Source::GitHub { url, rev } => {
+                match skillsmgr_fetch::check_github_head(&url).await {
+                    Ok(head) if head == rev => ("upToDate", Some(head), Some(rev)),
+                    Ok(head) => {
+                        if snapshots.first().map(|s| &s.content_sha256) != current_sha.as_ref() {
+                            ("diverged", Some(head), Some(rev))
+                        } else {
+                            ("updateAvailable", Some(head), Some(rev))
+                        }
+                    }
+                    Err(_) => ("sourceUnreachable", None, Some(rev)),
+                }
+            }
+            skillsmgr_core::Source::Local { path } => {
+                let source_md = path.join("SKILL.md");
+                if source_md.exists() {
+                    let source_content =
+                        std::fs::read_to_string(&source_md).map_err(ErrorDto::internal)?;
+                    let source_sha = sha256_hex(&source_content);
+                    if Some(&source_sha) == current_sha.as_ref() {
+                        ("upToDate", None, None)
+                    } else {
+                        ("updateAvailable", Some(source_sha), None)
+                    }
+                } else {
+                    ("sourceUnreachable", None, None)
+                }
+            }
+            _ => ("noSource", None, None),
+        },
+        None => {
+            if snapshots.is_empty() {
+                ("noSource", None, None)
+            } else {
+                let latest = &snapshots[0];
+                if Some(&latest.content_sha256) == current_sha.as_ref() {
+                    ("upToDate", None, None)
+                } else {
+                    ("locallyModified", None, None)
+                }
+            }
+        }
+    };
+
+    Ok(UpdateStatusDto {
+        status: status.to_string(),
+        current_content_sha256: current_sha,
+        upstream_rev,
+        stored_rev,
+        snapshot_count: snapshots.len(),
+    })
+}
+
+#[tauri::command]
+pub async fn list_snapshots(
+    installation: InstallationDto,
+    state: State<'_, AppState>,
+) -> Result<Vec<SnapshotDto>, ErrorDto> {
+    let inst = installation_from_dto(installation)?;
+    let snapshots = state.service.snapshots_for_installation(inst.id).await;
+    Ok(snapshots
+        .into_iter()
+        .map(|s| SnapshotDto {
+            id: s.id.to_string(),
+            installation_id: s.installation_id.to_string(),
+            content_sha256: s.content_sha256,
+            reason: s.reason,
+            created_at: s.created_at.to_rfc3339(),
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn confirm_rollback(
+    installation: InstallationDto,
+    snapshot_id: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<InstallationDto, ErrorDto> {
+    let inst = installation_from_dto(installation.clone())?;
+
+    let snapshot = if let Some(sid) = snapshot_id {
+        let id = Uuid::parse_str(&sid).map_err(ErrorDto::internal)?;
+        state
+            .service
+            .snapshots_for_installation(inst.id)
+            .await
+            .into_iter()
+            .find(|s| s.id == id)
+            .ok_or_else(|| ErrorDto {
+                code: "snapshotNotFound".into(),
+                params: [("id".into(), sid)].into(),
+            })?
+    } else {
+        state
+            .service
+            .latest_snapshot(inst.id)
+            .await
+            .ok_or_else(|| ErrorDto {
+                code: "noSnapshots".into(),
+                params: Default::default(),
+            })?
+    };
+
+    create_snapshot_before_write(&state, &inst, "pre_rollback").await?;
+
+    let snapshot_skill_md = snapshot.snapshot_path.join("SKILL.md");
+    if !snapshot_skill_md.exists() {
+        return Err(ErrorDto {
+            code: "snapshotCorrupt".into(),
+            params: [(
+                "path".into(),
+                snapshot.snapshot_path.to_string_lossy().into(),
+            )]
+            .into(),
+        });
+    }
+
+    copy_dir_contents_sync(&snapshot.snapshot_path, &inst.on_disk_path)?;
+
+    state
+        .service
+        .record_event(skillsmgr_registry::RecordEventInput {
+            event_type: "rollback".to_string(),
+            artifact_name: state.service.artifact_name_by_id(inst.artifact_id).await,
+            target: Some(inst.target.tool_id().to_string()),
+            succeeded: true,
+            error_message: None,
+            metadata_json: Some(
+                serde_json::json!({ "snapshotId": snapshot.id.to_string() }).to_string(),
+            ),
+        })
+        .await;
+
+    app.emit("installation-changed", ())
+        .map_err(ErrorDto::internal)?;
+
+    Ok(InstallationDto::from(&inst))
+}
+
+async fn create_snapshot_before_write(
+    state: &AppState,
+    installation: &Installation,
+    reason: &str,
+) -> Result<(), ErrorDto> {
+    if !installation.on_disk_path.exists() {
+        return Ok(());
+    }
+
+    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
+    let snapshot_dir = state
+        .snapshot_dir
+        .join(installation.id.to_string())
+        .join(&timestamp);
+    std::fs::create_dir_all(&snapshot_dir).map_err(ErrorDto::internal)?;
+
+    copy_dir_contents_sync(&installation.on_disk_path, &snapshot_dir)?;
+
+    let skill_md = snapshot_dir.join("SKILL.md");
+    let content_sha256 = if skill_md.exists() {
+        let content = std::fs::read_to_string(&skill_md).map_err(ErrorDto::internal)?;
+        sha256_hex(&content)
+    } else {
+        "empty".to_string()
+    };
+
+    state
+        .service
+        .record_snapshot(skillsmgr_registry::SnapshotInput {
+            installation_id: installation.id,
+            snapshot_path: snapshot_dir,
+            content_sha256,
+            reason: reason.to_string(),
+        })
+        .await
+        .map_err(ErrorDto::from)?;
+
+    Ok(())
+}
+
+fn copy_dir_contents_sync(src: &Path, dst: &Path) -> Result<(), ErrorDto> {
+    for entry in std::fs::read_dir(src).map_err(ErrorDto::internal)? {
+        let entry = entry.map_err(ErrorDto::internal)?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type().map_err(ErrorDto::internal)?.is_dir() {
+            std::fs::create_dir_all(&target).map_err(ErrorDto::internal)?;
+            copy_dir_contents_sync(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target).map_err(ErrorDto::internal)?;
+        }
+    }
+    Ok(())
+}
+
+// ── Cross-tool Adaptation ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn preview_adapt_skill(
+    artifact: crate::dto::ArtifactDto,
+    target_tool: String,
+    state: State<'_, AppState>,
+) -> Result<SkillDraftPreviewDto, ErrorDto> {
+    let original = artifact_from_dto(artifact)?;
+    if original.kind != ArtifactKind::Skill {
+        return Err(ErrorDto {
+            code: "unsupportedKind".into(),
+            params: [
+                ("kind".into(), kind_string(original.kind)),
+                ("target".into(), target_tool),
+            ]
+            .into(),
+        });
+    }
+
+    match target_tool.as_str() {
+        "codex" => {
+            let adapted = adapt_skill_for_codex(&original);
+            let target = Target::Codex {
+                scope: Scope::Global,
+            };
+            build_draft_preview(&state.service, &original, &adapted, &target, "adaptation").await
+        }
+        "opencode" => {
+            let adapted = adapt_skill_for_opencode(&original);
+            let target = Target::Opencode {
+                scope: Scope::Global,
+            };
+            build_draft_preview(&state.service, &original, &adapted, &target, "adaptation").await
+        }
+        other => Err(ErrorDto {
+            code: "unsupportedAdaptationTarget".into(),
+            params: [("target".into(), other.to_string())].into(),
+        }),
+    }
 }
 
 #[tauri::command]
@@ -121,6 +451,9 @@ pub async fn preview_import(
     .map_err(ErrorDto::from)?;
 
     let dto = ImportPreviewDto::from(&preview);
+    // Plain import is not market-sourced; clear any stale market origin so it
+    // cannot leak into this import's sidecar (Issue 016 D2).
+    *state.pending_market_origin.lock().await = None;
     *state.pending_import.lock().await = Some(preview);
     Ok(dto)
 }
@@ -132,21 +465,32 @@ pub async fn install(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Vec<InstallOutcomeDto>, ErrorDto> {
-    let candidate = {
+    let (candidate, import_source, resolved_rev) = {
         let guard = state.pending_import.lock().await;
         let pending = guard.as_ref().ok_or_else(|| ErrorDto {
             code: "noPendingImport".into(),
             params: Default::default(),
         })?;
-        pending
+        let candidate = pending
             .candidates
             .get(candidate_index)
             .ok_or_else(|| ErrorDto {
                 code: "invalidCandidateIndex".into(),
                 params: Default::default(),
             })?
-            .clone()
+            .clone();
+        // Real provenance lives on the ImportSource (user path / upstream URL),
+        // not on the artifact source which install rewrites to the staged dir.
+        // The resolved commit SHA (GitHub) lives on the stage (Issue 016).
+        (
+            candidate,
+            pending.source.clone(),
+            pending.stage.resolved_commit_sha.clone(),
+        )
     };
+
+    // Market-origin provenance for this pending import, if any (Issue 016).
+    let market_origin = state.pending_market_origin.lock().await.clone();
 
     let mut outcomes = Vec::with_capacity(targets.len());
     let mut any_succeeded = false;
@@ -170,6 +514,16 @@ pub async fn install(
         {
             Ok(installation) => {
                 any_succeeded = true;
+                // Record provenance next to the freshly installed skill.
+                // Best-effort: a sidecar write failure must not flip a
+                // successful install to failed (Issue 016 D5).
+                let lineage = build_import_lineage(
+                    &import_source,
+                    resolved_rev.as_deref(),
+                    market_origin.as_ref(),
+                    installation.installed_at.to_rfc3339(),
+                );
+                let _ = write_lineage_sidecar(&installation.on_disk_path, &lineage);
                 outcomes.push(InstallOutcomeDto {
                     target: target_dto,
                     ok: true,
@@ -525,6 +879,481 @@ pub async fn classify_skill_request(
 }
 
 #[tauri::command]
+pub async fn search_github_skills(query: String) -> Result<Vec<GitHubSkillResultDto>, ErrorDto> {
+    let search_query = format!("{} SKILL.md in:name,description,readme", query.trim());
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.github.com/search/repositories")
+        .query(&[
+            ("q", &search_query),
+            ("sort", &"stars".to_string()),
+            ("per_page", &"8".to_string()),
+        ])
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "M-Skills/0.1")
+        .send()
+        .await
+        .map_err(|e| ErrorDto {
+            code: "searchFailed".into(),
+            params: [("reason".into(), e.to_string())].into(),
+        })?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err(ErrorDto {
+            code: "searchRateLimited".into(),
+            params: Default::default(),
+        });
+    }
+    if !resp.status().is_success() {
+        return Err(ErrorDto {
+            code: "searchFailed".into(),
+            params: [("reason".into(), format!("HTTP {}", resp.status()))].into(),
+        });
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|e| ErrorDto {
+        code: "searchFailed".into(),
+        params: [("reason".into(), e.to_string())].into(),
+    })?;
+    let items = body["items"].as_array().unwrap_or(&Vec::new()).clone();
+    let results: Vec<GitHubSkillResultDto> = items
+        .iter()
+        .filter_map(|item| {
+            Some(GitHubSkillResultDto {
+                name: item["name"].as_str()?.to_string(),
+                owner: item["owner"]["login"].as_str()?.to_string(),
+                description: item["description"].as_str().map(|s| s.to_string()),
+                html_url: item["html_url"].as_str()?.to_string(),
+                stars: item["stargazers_count"].as_u64().unwrap_or(0) as u32,
+            })
+        })
+        .collect();
+    Ok(results)
+}
+
+// ── Skills Market: third-party registry search + preview ───────────────────
+
+struct ProviderError {
+    message: String,
+    is_rate_limited: bool,
+    retry_after_secs: Option<u32>,
+}
+
+#[tauri::command]
+pub async fn search_market_skills(
+    request: MarketSearchRequestDto,
+    state: State<'_, AppState>,
+) -> Result<MarketSearchResultDto, ErrorDto> {
+    let query = request.query.trim().to_string();
+    if query.is_empty() {
+        return Ok(MarketSearchResultDto {
+            query,
+            results: Vec::new(),
+            provider_errors: Vec::new(),
+            cached: false,
+        });
+    }
+
+    let mut provider_keys: Vec<&str> = Vec::new();
+    let want_skillsmd =
+        request.providers.is_empty() || request.providers.iter().any(|p| p == "skillsmd");
+    let want_asi =
+        request.providers.is_empty() || request.providers.iter().any(|p| p == "agent-skills-index");
+    if want_skillsmd {
+        provider_keys.push("skillsmd");
+    }
+    if want_asi {
+        provider_keys.push("agent-skills-index");
+    }
+    provider_keys.sort();
+    let cache_key = format!("{}:{}", query, provider_keys.join(","));
+
+    if let Some(cached) = state.market_cache.get(&cache_key).await {
+        return Ok(MarketSearchResultDto {
+            cached: true,
+            ..cached
+        });
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(ErrorDto::internal)?;
+
+    let mut all_results: Vec<MarketSkillCandidateDto> = Vec::new();
+    let mut errors: Vec<MarketProviderErrorDto> = Vec::new();
+
+    let (skillsmd_result, asi_result) = tokio::join!(
+        async {
+            if want_skillsmd {
+                Some(search_skillsmd(&client, &query).await)
+            } else {
+                None
+            }
+        },
+        async {
+            if want_asi {
+                Some(search_agent_skills_index(&client, &query).await)
+            } else {
+                None
+            }
+        }
+    );
+
+    if let Some(result) = skillsmd_result {
+        match result {
+            Ok(mut items) => all_results.append(&mut items),
+            Err(pe) => errors.push(MarketProviderErrorDto {
+                provider_id: "skillsmd".into(),
+                message: pe.message,
+                is_rate_limited: pe.is_rate_limited,
+                retry_after_secs: pe.retry_after_secs,
+            }),
+        }
+    }
+    if let Some(result) = asi_result {
+        match result {
+            Ok(mut items) => all_results.append(&mut items),
+            Err(pe) => errors.push(MarketProviderErrorDto {
+                provider_id: "agent-skills-index".into(),
+                message: pe.message,
+                is_rate_limited: pe.is_rate_limited,
+                retry_after_secs: pe.retry_after_secs,
+            }),
+        }
+    }
+
+    let results = merge_and_dedup(all_results);
+
+    let dto = MarketSearchResultDto {
+        query,
+        results,
+        provider_errors: errors,
+        cached: false,
+    };
+
+    // Only cache when at least one provider succeeded (so a full-failure
+    // response doesn't block retries for the whole TTL window).
+    if !dto.results.is_empty() || dto.provider_errors.is_empty() {
+        state.market_cache.put(cache_key, dto.clone()).await;
+    }
+
+    Ok(dto)
+}
+
+#[tauri::command]
+pub async fn preview_market_skill(
+    request: MarketPreviewRequestDto,
+    state: State<'_, AppState>,
+) -> Result<ImportPreviewDto, ErrorDto> {
+    let scopes = vec![Scope::Global];
+
+    let github_url = match request.provider_id.as_str() {
+        "skillsmd" => {
+            format!("https://github.com/{}", request.external_id)
+        }
+        "agent-skills-index" => {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()
+                .map_err(ErrorDto::internal)?;
+            let parts: Vec<&str> = request.external_id.splitn(2, '/').collect();
+            if parts.len() != 2 {
+                return Err(ErrorDto {
+                    code: "marketInvalidId".into(),
+                    params: [("id".into(), request.external_id.clone())].into(),
+                });
+            }
+            let detail_url = format!(
+                "https://agentskillsindex.com/api/skills/{}/{}",
+                parts[0], parts[1]
+            );
+            let resp = client
+                .get(&detail_url)
+                .header("Accept", "application/json")
+                .header("User-Agent", "M-Skills/0.1")
+                .send()
+                .await
+                .map_err(|e| ErrorDto {
+                    code: "marketFetchFailed".into(),
+                    params: [("reason".into(), e.to_string())].into(),
+                })?;
+            if !resp.status().is_success() {
+                return Err(ErrorDto {
+                    code: "marketFetchFailed".into(),
+                    params: [("reason".into(), format!("HTTP {}", resp.status()))].into(),
+                });
+            }
+            let body: serde_json::Value = resp.json().await.map_err(|e| ErrorDto {
+                code: "marketFetchFailed".into(),
+                params: [("reason".into(), e.to_string())].into(),
+            })?;
+
+            if let Some(content) = body["skill_md_content"].as_str() {
+                if !content.trim().is_empty() {
+                    let repo_name = parts[1];
+                    let temp_dir = tempfile::tempdir().map_err(ErrorDto::internal)?;
+                    let skill_dir = temp_dir.path().join(repo_name);
+                    std::fs::create_dir_all(&skill_dir).map_err(ErrorDto::internal)?;
+                    std::fs::write(skill_dir.join("SKILL.md"), content.as_bytes())
+                        .map_err(ErrorDto::internal)?;
+
+                    let preview = state
+                        .service
+                        .preview_local_import(&skill_dir, scopes)
+                        .await
+                        .map_err(ErrorDto::from)?;
+                    let dto = ImportPreviewDto::from(&preview);
+                    // Record the real upstream (github_url, else the ASI detail
+                    // URL) so the sidecar never points at the temp staging dir
+                    // (Issue 016 D3).
+                    let upstream_url = body["github_url"]
+                        .as_str()
+                        .map(str::to_string)
+                        .or_else(|| Some(detail_url.clone()));
+                    *state.pending_market_origin.lock().await = Some(MarketOrigin {
+                        provider_id: request.provider_id.clone(),
+                        external_id: request.external_id.clone(),
+                        upstream_url,
+                    });
+                    *state.pending_import.lock().await = Some(preview);
+                    return Ok(dto);
+                }
+            }
+
+            if let Some(url) = body["github_url"].as_str() {
+                url.to_string()
+            } else {
+                format!("https://github.com/{}", request.external_id)
+            }
+        }
+        other => {
+            return Err(ErrorDto {
+                code: "marketUnsupportedProvider".into(),
+                params: [("provider".into(), other.to_string())].into(),
+            })
+        }
+    };
+
+    let preview = state
+        .service
+        .preview_github_import(&github_url, scopes)
+        .await
+        .map_err(ErrorDto::from)?;
+    let dto = ImportPreviewDto::from(&preview);
+    *state.pending_market_origin.lock().await = Some(MarketOrigin {
+        provider_id: request.provider_id.clone(),
+        external_id: request.external_id.clone(),
+        upstream_url: Some(github_url.clone()),
+    });
+    *state.pending_import.lock().await = Some(preview);
+    Ok(dto)
+}
+
+/// Supports delta-seconds only (e.g. "30"). HTTP-date values silently
+/// fall through to `None`; the caller provides a provider-specific default.
+fn parse_retry_after(resp: &reqwest::Response) -> Option<u32> {
+    resp.headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u32>().ok())
+}
+
+async fn search_skillsmd(
+    client: &reqwest::Client,
+    query: &str,
+) -> std::result::Result<Vec<MarketSkillCandidateDto>, ProviderError> {
+    let resp = client
+        .get("https://skillsmd.dev/api/search")
+        .query(&[("q", query)])
+        .header("Accept", "application/json")
+        .header("User-Agent", "M-Skills/0.1")
+        .send()
+        .await
+        .map_err(|e| ProviderError {
+            message: e.to_string(),
+            is_rate_limited: false,
+            retry_after_secs: None,
+        })?;
+
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let retry = parse_retry_after(&resp);
+        return Err(ProviderError {
+            message: "Rate limited — try again shortly.".into(),
+            is_rate_limited: true,
+            retry_after_secs: retry.or(Some(30)),
+        });
+    }
+    if !resp.status().is_success() {
+        return Err(ProviderError {
+            message: format!("HTTP {}", resp.status()),
+            is_rate_limited: false,
+            retry_after_secs: None,
+        });
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| ProviderError {
+        message: e.to_string(),
+        is_rate_limited: false,
+        retry_after_secs: None,
+    })?;
+
+    let items = body
+        .as_array()
+        .or_else(|| body["results"].as_array())
+        .or_else(|| body["skills"].as_array())
+        .or_else(|| body["items"].as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(items
+        .iter()
+        .filter_map(|item| {
+            let repo = item["repo"]
+                .as_str()
+                .or_else(|| item["full_name"].as_str())
+                .or_else(|| item["repository"].as_str())?;
+            let name = item["name"]
+                .as_str()
+                .unwrap_or_else(|| repo.rsplit('/').next().unwrap_or(repo));
+            Some(MarketSkillCandidateDto {
+                provider_id: "skillsmd".into(),
+                external_id: repo.to_string(),
+                name: name.to_string(),
+                description: item["description"].as_str().map(|s| s.to_string()),
+                repo_url: Some(format!("https://github.com/{repo}")),
+                stars: item["stars"]
+                    .as_u64()
+                    .or_else(|| item["stargazers_count"].as_u64())
+                    .map(|s| s as u32),
+                updated_at: item["updated_at"]
+                    .as_str()
+                    .or_else(|| item["updatedAt"].as_str())
+                    .map(|s| s.to_string()),
+                categories: extract_string_array(item, "categories"),
+                has_skill_md: true,
+            })
+        })
+        .collect())
+}
+
+async fn search_agent_skills_index(
+    client: &reqwest::Client,
+    query: &str,
+) -> std::result::Result<Vec<MarketSkillCandidateDto>, ProviderError> {
+    let resp = client
+        .get("https://agentskillsindex.com/api/skills")
+        .query(&[("q", query)])
+        .header("Accept", "application/json")
+        .header("User-Agent", "M-Skills/0.1")
+        .send()
+        .await
+        .map_err(|e| ProviderError {
+            message: e.to_string(),
+            is_rate_limited: false,
+            retry_after_secs: None,
+        })?;
+
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let retry = parse_retry_after(&resp);
+        return Err(ProviderError {
+            message: "Rate limited (100 req/min) — try again shortly.".into(),
+            is_rate_limited: true,
+            retry_after_secs: retry.or(Some(60)),
+        });
+    }
+    if !resp.status().is_success() {
+        return Err(ProviderError {
+            message: format!("HTTP {}", resp.status()),
+            is_rate_limited: false,
+            retry_after_secs: None,
+        });
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| ProviderError {
+        message: e.to_string(),
+        is_rate_limited: false,
+        retry_after_secs: None,
+    })?;
+
+    let items = body
+        .as_array()
+        .or_else(|| body["results"].as_array())
+        .or_else(|| body["skills"].as_array())
+        .or_else(|| body["data"].as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(items
+        .iter()
+        .filter_map(|item| {
+            let owner = item["owner"].as_str().or_else(|| item["user"].as_str())?;
+            let repo = item["repo"].as_str().or_else(|| item["name"].as_str())?;
+            let external_id = format!("{owner}/{repo}");
+            let has_skill_md = item
+                .get("skill_md_content")
+                .map(|v| v.is_string() && !v.as_str().unwrap_or("").is_empty())
+                .unwrap_or(false);
+            Some(MarketSkillCandidateDto {
+                provider_id: "agent-skills-index".into(),
+                external_id,
+                name: repo.to_string(),
+                description: item["description"].as_str().map(|s| s.to_string()),
+                repo_url: item["github_url"]
+                    .as_str()
+                    .or_else(|| item["html_url"].as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| Some(format!("https://github.com/{owner}/{repo}"))),
+                stars: item["stars"]
+                    .as_u64()
+                    .or_else(|| item["stargazers_count"].as_u64())
+                    .map(|s| s as u32),
+                updated_at: item["updated_at"]
+                    .as_str()
+                    .or_else(|| item["updatedAt"].as_str())
+                    .map(|s| s.to_string()),
+                categories: extract_string_array(item, "categories"),
+                has_skill_md,
+            })
+        })
+        .collect())
+}
+
+fn merge_and_dedup(mut candidates: Vec<MarketSkillCandidateDto>) -> Vec<MarketSkillCandidateDto> {
+    use std::collections::HashMap;
+
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut out: Vec<MarketSkillCandidateDto> = Vec::new();
+
+    candidates.sort_by(|a, b| b.stars.unwrap_or(0).cmp(&a.stars.unwrap_or(0)));
+
+    for candidate in candidates {
+        let key = candidate
+            .repo_url
+            .clone()
+            .unwrap_or_else(|| format!("{}:{}", candidate.provider_id, candidate.external_id));
+        if let Some(&idx) = seen.get(&key) {
+            if candidate.stars.unwrap_or(0) > out[idx].stars.unwrap_or(0) {
+                out[idx] = candidate;
+            }
+        } else {
+            seen.insert(key, out.len());
+            out.push(candidate);
+        }
+    }
+    out
+}
+
+fn extract_string_array(item: &serde_json::Value, field: &str) -> Vec<String> {
+    item[field]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tauri::command]
 pub async fn review_artifact_compatibility(
     artifact: crate::dto::ArtifactDto,
     targets: Vec<TargetDto>,
@@ -608,7 +1437,7 @@ pub async fn save_custom_skill_edit(
         .frontmatter
         .name
         .clone()
-        .unwrap_or_else(|| request.lineage.parent_name.clone());
+        .unwrap_or_else(|| request.lineage.parent_name.clone().unwrap_or_default());
     let description = parsed.frontmatter.description.clone().unwrap_or_default();
     let version = parsed.frontmatter.version.clone();
     let body = parsed.body.clone();
@@ -641,7 +1470,7 @@ pub async fn save_custom_skill_edit(
     let audit = ImportAuditDto::from(&skillsmgr_fetch::audit_skill_body(&request.content));
 
     Ok(SkillDraftPreviewDto {
-        original_name: request.lineage.parent_name.clone(),
+        original_name: request.lineage.parent_name.clone().unwrap_or_default(),
         original_content: request.content.clone(),
         adapted_name: name,
         adapted_description: description,
@@ -661,6 +1490,7 @@ pub async fn confirm_install_skill_draft(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<InstallationDto, ErrorDto> {
+    let source_kind = request.lineage.source_kind.clone();
     let (installation, artifact) = install_skill_draft_core(&state.service, request).await?;
     state
         .service
@@ -670,6 +1500,7 @@ pub async fn confirm_install_skill_draft(
             target: Some(installation.target.tool_id().to_string()),
             succeeded: true,
             error_message: None,
+            metadata_json: Some(serde_json::json!({ "sourceKind": source_kind }).to_string()),
         })
         .await;
     spawn_post_install_summary(
@@ -766,6 +1597,7 @@ pub async fn rewrite_skill_with_llm(
             } else {
                 None
             },
+            metadata_json: None,
         })
         .await;
     outcome
@@ -1283,11 +2115,12 @@ async fn build_draft_preview(
 
     let lineage = LineageDto {
         source_kind: source_kind.to_string(),
-        source_tool: None,
         source_path,
         source_url,
-        source_hash,
-        parent_name: original.name.clone(),
+        // Draft writers always fill these (Issue 016 D1 constraint).
+        source_hash: Some(source_hash),
+        parent_name: Some(original.name.clone()),
+        ..Default::default()
     };
 
     let compatibility_reviews =
@@ -1331,6 +2164,33 @@ async fn probe_name_conflict(
     }
 }
 
+fn yaml_quote(value: &str) -> String {
+    let needs_quoting = value.contains(": ")
+        || value.contains('#')
+        || value.contains('\n')
+        || value.starts_with('{')
+        || value.starts_with('[')
+        || value.starts_with('\'')
+        || value.starts_with('"')
+        || value.starts_with('*')
+        || value.starts_with('&')
+        || value.starts_with('!')
+        || value.starts_with('%')
+        || value.starts_with('@')
+        || value.starts_with('`')
+        || value.starts_with('|')
+        || value.starts_with('>')
+        || value.starts_with(',')
+        || value.starts_with('?')
+        || value.starts_with('-')
+        || value.ends_with(':');
+    if needs_quoting {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
+}
+
 fn compose_skill_md(
     name: &str,
     description: &str,
@@ -1338,12 +2198,12 @@ fn compose_skill_md(
     body: Option<&str>,
 ) -> String {
     let mut out = String::from("---\n");
-    out.push_str(&format!("name: {name}\n"));
+    out.push_str(&format!("name: {}\n", yaml_quote(name)));
     if !description.is_empty() {
-        out.push_str(&format!("description: {description}\n"));
+        out.push_str(&format!("description: {}\n", yaml_quote(description)));
     }
     if let Some(version) = version {
-        out.push_str(&format!("version: {version}\n"));
+        out.push_str(&format!("version: {}\n", yaml_quote(version)));
     }
     out.push_str("---\n\n");
     if let Some(body) = body {
@@ -1364,6 +2224,59 @@ fn write_lineage_sidecar(dir: &Path, lineage: &LineageDto) -> Result<(), ErrorDt
     let bytes = serde_json::to_vec_pretty(lineage).map_err(ErrorDto::internal)?;
     std::fs::write(dir.join(".m-skills.json"), bytes).map_err(ErrorDto::internal)?;
     Ok(())
+}
+
+/// Build the lineage sidecar payload for an import install (Issue 016). Market
+/// origin, when present, takes precedence so an ASI staged-content install
+/// records the real upstream URL instead of the deleted temp dir (D3). Returns
+/// `None` for sources with no meaningful provenance (`Bundled` / `Unknown`).
+/// Build the lineage sidecar payload for an import install (Issue 016). Reads
+/// provenance from the `ImportSource` (the real user path / upstream URL) rather
+/// than the artifact source, which install rewrites to the staged temp dir.
+/// Market origin, when present, takes precedence so an ASI staged-content
+/// install records the real upstream URL instead of the deleted temp dir (D3).
+fn build_import_lineage(
+    source: &ImportSource,
+    resolved_rev: Option<&str>,
+    market: Option<&MarketOrigin>,
+    fetched_at: String,
+) -> LineageDto {
+    if let Some(m) = market {
+        let url_from_src = match source {
+            ImportSource::GitHub { url } | ImportSource::RawUrl { url } => Some(url.clone()),
+            ImportSource::Local { .. } => None,
+        };
+        return LineageDto {
+            source_kind: "market".into(),
+            provider_id: Some(m.provider_id.clone()),
+            external_id: Some(m.external_id.clone()),
+            source_url: m.upstream_url.clone().or(url_from_src),
+            source_rev: resolved_rev.map(str::to_string),
+            fetched_at: Some(fetched_at),
+            ..Default::default()
+        };
+    }
+    match source {
+        ImportSource::GitHub { url } => LineageDto {
+            source_kind: "github".into(),
+            source_url: Some(url.clone()),
+            source_rev: resolved_rev.map(str::to_string),
+            fetched_at: Some(fetched_at),
+            ..Default::default()
+        },
+        ImportSource::RawUrl { url } => LineageDto {
+            source_kind: "url".into(),
+            source_url: Some(url.clone()),
+            fetched_at: Some(fetched_at),
+            ..Default::default()
+        },
+        ImportSource::Local { path } => LineageDto {
+            source_kind: "local".into(),
+            source_path: Some(path.to_string_lossy().to_string()),
+            fetched_at: Some(fetched_at),
+            ..Default::default()
+        },
+    }
 }
 
 fn kind_string(kind: ArtifactKind) -> String {
@@ -1489,6 +2402,41 @@ fn remove_frontmatter_field(content: &str, field: &str) -> String {
     format!("---\n{filtered}\n---{tail}")
 }
 
+fn adapt_skill_for_opencode(original: &Artifact) -> Artifact {
+    let body = original
+        .body
+        .as_deref()
+        .map(adapt_skill_body_for_opencode)
+        .or_else(|| Some(String::new()));
+    Artifact {
+        id: Uuid::new_v4(),
+        name: original.name.clone(),
+        description: if original.description.trim().is_empty() {
+            "Adapted skill for opencode".to_string()
+        } else {
+            original.description.clone()
+        },
+        body,
+        version: original.version.clone(),
+        kind: ArtifactKind::Skill,
+        source: original.source.clone(),
+        search_aliases: original.search_aliases.clone(),
+        capabilities: Vec::new(),
+    }
+}
+
+fn adapt_skill_body_for_opencode(body: &str) -> String {
+    let mut out = body.to_string();
+    out = remove_frontmatter_field(&out, "allowed-tools");
+    let note = "\n\n## opencode Adaptation Notes\n\n- This skill was adapted for opencode as the host tool.\n- `allowed-tools` metadata was removed because opencode does not enforce Claude Code tool restrictions.\n- Tool-specific references (TodoWrite, Task tool, etc.) were left for review; opencode may not support all of them.\n";
+    if out.contains("## opencode Adaptation Notes") {
+        out
+    } else {
+        out.push_str(note);
+        out
+    }
+}
+
 #[cfg(test)]
 mod adaptation_tests {
     use skillsmgr_core::{Artifact, ArtifactKind, Source};
@@ -1557,6 +2505,131 @@ Codex is the host tool, not the model identity.\n"
         assert_eq!(adapted_skill_name("My Skill"), "my-skill-codex");
         assert_eq!(adapted_skill_name("foo-codex"), "foo-codex");
     }
+
+    #[test]
+    fn compose_skill_md_quotes_description_with_colon() {
+        use super::compose_skill_md;
+
+        let md = compose_skill_md(
+            "test-skill",
+            "Review code: find bugs and style issues",
+            None,
+            Some("body text"),
+        );
+        let parsed = skillsmgr_parse::parse_skill_markdown_str(&md);
+        assert!(parsed.is_ok(), "parse failed: {:?}", parsed.err());
+        let parsed = parsed.unwrap();
+        assert_eq!(parsed.frontmatter.name.as_deref(), Some("test-skill"));
+        assert_eq!(
+            parsed.frontmatter.description.as_deref(),
+            Some("Review code: find bugs and style issues")
+        );
+    }
+}
+
+#[cfg(test)]
+mod adaptation_opencode_tests {
+    use skillsmgr_core::{Artifact, ArtifactKind, Source};
+
+    use super::{adapt_skill_body_for_opencode, adapt_skill_for_opencode};
+
+    fn skill_with_body(body: &str) -> Artifact {
+        Artifact::new(
+            "review-skill",
+            "Reviews code with Claude Code",
+            None,
+            ArtifactKind::Skill,
+            Source::Unknown,
+        )
+        .with_body(Some(body.to_string()))
+    }
+
+    #[test]
+    fn removes_allowed_tools_frontmatter() {
+        let artifact = skill_with_body(
+            "---\nname: review-skill\nallowed-tools: Read, Grep\n---\nUse the tool.",
+        );
+        let adapted = adapt_skill_for_opencode(&artifact);
+        let body = adapted.body.unwrap();
+        assert!(!body.contains("allowed-tools: Read, Grep"));
+        let (content, _notes) = body
+            .split_once("\n\n## opencode Adaptation Notes")
+            .expect("adaptation notes");
+        assert!(!content.contains("allowed-tools"));
+    }
+
+    #[test]
+    fn preserves_name_without_suffix() {
+        let artifact = skill_with_body("---\nname: review-skill\n---\nbody");
+        let adapted = adapt_skill_for_opencode(&artifact);
+        assert_eq!(adapted.name, "review-skill");
+    }
+
+    #[test]
+    fn adds_adaptation_notes() {
+        let artifact = skill_with_body("---\nname: review-skill\n---\nbody");
+        let adapted = adapt_skill_for_opencode(&artifact);
+        let body = adapted.body.unwrap();
+        assert!(body.contains("## opencode Adaptation Notes"));
+    }
+
+    #[test]
+    fn does_not_replace_claude_code_in_body() {
+        let body = adapt_skill_body_for_opencode(
+            "---\nname: review-skill\n---\nUse Claude Code's TodoWrite to track items.",
+        );
+        assert!(body.contains("Claude Code's TodoWrite"));
+    }
+
+    #[test]
+    fn idempotent_adaptation_notes() {
+        let first = adapt_skill_body_for_opencode("---\nname: test\n---\nbody");
+        let second = adapt_skill_body_for_opencode(&first);
+        let count = second.matches("## opencode Adaptation Notes").count();
+        assert_eq!(count, 1);
+    }
+}
+
+#[cfg(test)]
+mod compatibility_opencode_tests {
+    use skillsmgr_core::{Artifact, ArtifactKind, Scope, Source, Target};
+
+    use crate::compatibility::{review_for_target, CompatibilityRiskLevel, CompatibilityStatus};
+
+    fn skill(body: &str) -> Artifact {
+        Artifact::new(
+            "review-skill",
+            "Review code",
+            None,
+            ArtifactKind::Skill,
+            Source::Unknown,
+        )
+        .with_body(Some(body.to_string()))
+    }
+
+    #[test]
+    fn warns_about_claude_tools_for_opencode() {
+        let review = review_for_target(
+            &skill("Use Claude Code allowed-tools and TodoWrite."),
+            Target::Opencode {
+                scope: Scope::Global,
+            },
+        );
+        assert_eq!(review.status, CompatibilityStatus::Warning);
+        assert_eq!(review.risk_level, CompatibilityRiskLevel::Medium);
+        assert!(review.warnings.iter().any(|w| w.contains("opencode")));
+    }
+
+    #[test]
+    fn clean_skill_compatible_with_opencode() {
+        let review = review_for_target(
+            &skill("Use normal repository analysis."),
+            Target::Opencode {
+                scope: Scope::Global,
+            },
+        );
+        assert_eq!(review.status, CompatibilityStatus::Compatible);
+    }
 }
 
 #[cfg(test)]
@@ -1620,10 +2693,13 @@ mod batch2_tests {
             .unwrap();
 
         assert_eq!(preview.lineage.source_kind, "adaptation");
-        assert_eq!(preview.lineage.parent_name, "review-skill");
+        assert_eq!(preview.lineage.parent_name.as_deref(), Some("review-skill"));
         assert!(preview.adapted_content.contains("Codex Adaptation Notes"));
         let expected_hash = sha256_hex(&preview.original_content);
-        assert_eq!(preview.lineage.source_hash, expected_hash);
+        assert_eq!(
+            preview.lineage.source_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
         assert!(preview.name_conflict.is_none());
         assert!(!home.path().join(".agents/skills").exists());
     }
@@ -1676,9 +2752,9 @@ mod batch2_tests {
             source_kind: "adaptation".into(),
             source_tool: Some("claude-code".into()),
             source_path: Some("/tmp/source".into()),
-            source_url: None,
-            source_hash: "abc123".into(),
-            parent_name: "review-skill".into(),
+            source_hash: Some("abc123".into()),
+            parent_name: Some("review-skill".into()),
+            ..Default::default()
         };
         let content =
             "---\nname: review-skill-codex\ndescription: Adapted\n---\nUse Codex carefully.\n";
@@ -1719,11 +2795,9 @@ mod batch2_tests {
             target: codex_global(),
             lineage: LineageDto {
                 source_kind: "adaptation".into(),
-                source_tool: None,
-                source_path: None,
-                source_url: None,
-                source_hash: "x".into(),
-                parent_name: "review-skill".into(),
+                source_hash: Some("x".into()),
+                parent_name: Some("review-skill".into()),
+                ..Default::default()
             },
         };
 
@@ -1813,11 +2887,9 @@ mod batch2_tests {
             target: codex_global(),
             lineage: LineageDto {
                 source_kind: "fork".into(),
-                source_tool: None,
-                source_path: None,
-                source_url: None,
-                source_hash: "x".into(),
-                parent_name: "foo".into(),
+                source_hash: Some("x".into()),
+                parent_name: Some("foo".into()),
+                ..Default::default()
             },
         };
         let json = serde_json::to_string(&req).unwrap();
@@ -1827,6 +2899,143 @@ mod batch2_tests {
     #[test]
     fn source_dto_unused_in_test_avoids_warning() {
         let _ = SourceDto::Bundled;
+    }
+
+    // ── Issue 016: import provenance lineage ──────────────────────────────
+
+    #[test]
+    fn import_lineage_github_records_url_and_rev() {
+        let source = ImportSource::GitHub {
+            url: "https://github.com/owner/repo".into(),
+        };
+        let lineage =
+            build_import_lineage(&source, Some("abc123"), None, "2026-06-08T00:00:00Z".into());
+        assert_eq!(lineage.source_kind, "github");
+        assert_eq!(
+            lineage.source_url.as_deref(),
+            Some("https://github.com/owner/repo")
+        );
+        assert_eq!(lineage.source_rev.as_deref(), Some("abc123"));
+        assert_eq!(lineage.fetched_at.as_deref(), Some("2026-06-08T00:00:00Z"));
+        assert!(lineage.provider_id.is_none());
+        assert!(lineage.parent_name.is_none());
+    }
+
+    #[test]
+    fn import_lineage_github_without_resolved_rev_is_none() {
+        let source = ImportSource::GitHub {
+            url: "https://github.com/o/r".into(),
+        };
+        let lineage = build_import_lineage(&source, None, None, "t".into());
+        assert!(lineage.source_rev.is_none());
+    }
+
+    #[test]
+    fn import_lineage_url_records_url() {
+        let source = ImportSource::RawUrl {
+            url: "https://example.com/SKILL.md".into(),
+        };
+        let lineage = build_import_lineage(&source, None, None, "t".into());
+        assert_eq!(lineage.source_kind, "url");
+        assert_eq!(
+            lineage.source_url.as_deref(),
+            Some("https://example.com/SKILL.md")
+        );
+    }
+
+    #[test]
+    fn import_lineage_local_records_real_path() {
+        let source = ImportSource::Local {
+            path: std::path::PathBuf::from("/home/u/skill"),
+        };
+        let lineage = build_import_lineage(&source, None, None, "t".into());
+        assert_eq!(lineage.source_kind, "local");
+        assert_eq!(lineage.source_path.as_deref(), Some("/home/u/skill"));
+    }
+
+    #[test]
+    fn import_lineage_market_skillsmd_keeps_url_and_rev() {
+        let source = ImportSource::GitHub {
+            url: "https://github.com/o/r".into(),
+        };
+        let market = MarketOrigin {
+            provider_id: "skillsmd".into(),
+            external_id: "o/r".into(),
+            upstream_url: Some("https://github.com/o/r".into()),
+        };
+        let lineage = build_import_lineage(&source, Some("deadbeef"), Some(&market), "t".into());
+        assert_eq!(lineage.source_kind, "market");
+        assert_eq!(lineage.provider_id.as_deref(), Some("skillsmd"));
+        assert_eq!(lineage.external_id.as_deref(), Some("o/r"));
+        assert_eq!(
+            lineage.source_url.as_deref(),
+            Some("https://github.com/o/r")
+        );
+        assert_eq!(lineage.source_rev.as_deref(), Some("deadbeef"));
+    }
+
+    #[test]
+    fn import_lineage_market_asi_staged_drops_temp_path() {
+        // ASI staged content: the ImportSource is a temp Local path, but the
+        // market origin carries the real upstream URL. The sidecar must record
+        // the upstream URL and never the temp dir (Issue 016 D3).
+        let source = ImportSource::Local {
+            path: std::path::PathBuf::from("/tmp/.tmpABCD/lint-skill"),
+        };
+        let market = MarketOrigin {
+            provider_id: "agent-skills-index".into(),
+            external_id: "o/lint-skill".into(),
+            upstream_url: Some("https://github.com/o/lint-skill".into()),
+        };
+        let lineage = build_import_lineage(&source, None, Some(&market), "t".into());
+        assert_eq!(lineage.source_kind, "market");
+        assert_eq!(lineage.provider_id.as_deref(), Some("agent-skills-index"));
+        assert_eq!(
+            lineage.source_url.as_deref(),
+            Some("https://github.com/o/lint-skill")
+        );
+        assert!(
+            lineage.source_path.is_none(),
+            "temp staging path must not be recorded as provenance"
+        );
+    }
+
+    #[test]
+    fn import_lineage_sidecar_round_trips_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = ImportSource::GitHub {
+            url: "https://github.com/o/r".into(),
+        };
+        let lineage =
+            build_import_lineage(&source, Some("sha1"), None, "2026-06-08T00:00:00Z".into());
+        write_lineage_sidecar(dir.path(), &lineage).unwrap();
+        let read: LineageDto =
+            serde_json::from_slice(&std::fs::read(dir.path().join(".m-skills.json")).unwrap())
+                .unwrap();
+        assert_eq!(read.source_kind, "github");
+        assert_eq!(read.source_url.as_deref(), Some("https://github.com/o/r"));
+        assert_eq!(read.source_rev.as_deref(), Some("sha1"));
+        assert_eq!(read.fetched_at.as_deref(), Some("2026-06-08T00:00:00Z"));
+    }
+
+    #[test]
+    fn old_lineage_sidecar_deserializes_with_new_fields_none() {
+        // Guardrail: pre-Issue-016 sidecars (only the original draft fields) must
+        // still deserialize; the new optional fields default to None.
+        let old = r#"{
+            "sourceKind": "adaptation",
+            "sourceTool": "claude-code",
+            "sourcePath": "/tmp/x",
+            "sourceHash": "abc123",
+            "parentName": "review-skill"
+        }"#;
+        let lineage: LineageDto = serde_json::from_str(old).unwrap();
+        assert_eq!(lineage.source_kind, "adaptation");
+        assert_eq!(lineage.parent_name.as_deref(), Some("review-skill"));
+        assert_eq!(lineage.source_hash.as_deref(), Some("abc123"));
+        assert!(lineage.provider_id.is_none());
+        assert!(lineage.source_rev.is_none());
+        assert!(lineage.fetched_at.is_none());
     }
 }
 
@@ -2046,6 +3255,201 @@ mod batch3_tests {
     }
 }
 
+#[cfg(test)]
+mod market_tests {
+    use super::*;
+
+    fn skillsmd_mock_response() -> serde_json::Value {
+        serde_json::json!([
+            {
+                "repo": "owner/code-review-skill",
+                "name": "code-review-skill",
+                "description": "A skill for reviewing code",
+                "stars": 42,
+                "updated_at": "2026-05-01T12:00:00Z",
+                "categories": ["testing", "engineering"]
+            },
+            {
+                "repo": "dev/lint-fix",
+                "name": "lint-fix",
+                "description": "Auto-fix linting issues",
+                "stars": 10,
+                "updated_at": "2026-04-15T08:30:00Z",
+                "categories": ["tools"]
+            }
+        ])
+    }
+
+    fn asi_mock_response() -> serde_json::Value {
+        serde_json::json!([
+            {
+                "owner": "dev",
+                "repo": "lint-fix",
+                "name": "lint-fix",
+                "description": "Fix lint problems automatically",
+                "stars": 15,
+                "github_url": "https://github.com/dev/lint-fix",
+                "skill_md_content": "---\nname: lint-fix\n---\nFix lint issues.",
+                "categories": ["tools"]
+            },
+            {
+                "owner": "other",
+                "repo": "security-scan",
+                "description": "Scan for vulnerabilities",
+                "stars": 88,
+                "github_url": "https://github.com/other/security-scan",
+                "categories": ["security"]
+            }
+        ])
+    }
+
+    fn parse_skillsmd(body: &serde_json::Value) -> Vec<MarketSkillCandidateDto> {
+        let items = body.as_array().cloned().unwrap_or_default();
+        items
+            .iter()
+            .filter_map(|item| {
+                let repo = item["repo"].as_str()?;
+                let name = item["name"]
+                    .as_str()
+                    .unwrap_or_else(|| repo.rsplit('/').next().unwrap_or(repo));
+                Some(MarketSkillCandidateDto {
+                    provider_id: "skillsmd".into(),
+                    external_id: repo.to_string(),
+                    name: name.to_string(),
+                    description: item["description"].as_str().map(|s| s.to_string()),
+                    repo_url: Some(format!("https://github.com/{repo}")),
+                    stars: item["stars"].as_u64().map(|s| s as u32),
+                    updated_at: item["updated_at"].as_str().map(|s| s.to_string()),
+                    categories: extract_string_array(item, "categories"),
+                    has_skill_md: true,
+                })
+            })
+            .collect()
+    }
+
+    fn parse_asi(body: &serde_json::Value) -> Vec<MarketSkillCandidateDto> {
+        let items = body.as_array().cloned().unwrap_or_default();
+        items
+            .iter()
+            .filter_map(|item| {
+                let owner = item["owner"].as_str()?;
+                let repo = item["repo"].as_str().or_else(|| item["name"].as_str())?;
+                let external_id = format!("{owner}/{repo}");
+                let has_skill_md = item
+                    .get("skill_md_content")
+                    .map(|v| v.is_string() && !v.as_str().unwrap_or("").is_empty())
+                    .unwrap_or(false);
+                Some(MarketSkillCandidateDto {
+                    provider_id: "agent-skills-index".into(),
+                    external_id,
+                    name: repo.to_string(),
+                    description: item["description"].as_str().map(|s| s.to_string()),
+                    repo_url: item["github_url"].as_str().map(|s| s.to_string()),
+                    stars: item["stars"].as_u64().map(|s| s as u32),
+                    updated_at: item["updated_at"].as_str().map(|s| s.to_string()),
+                    categories: extract_string_array(item, "categories"),
+                    has_skill_md,
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn skillsmd_response_parses_into_candidates() {
+        let body = skillsmd_mock_response();
+        let results = parse_skillsmd(&body);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].provider_id, "skillsmd");
+        assert_eq!(results[0].external_id, "owner/code-review-skill");
+        assert_eq!(results[0].name, "code-review-skill");
+        assert_eq!(results[0].stars, Some(42));
+        assert!(results[0].has_skill_md);
+        assert_eq!(results[0].categories, vec!["testing", "engineering"]);
+    }
+
+    #[test]
+    fn agent_skills_index_response_parses_into_candidates() {
+        let body = asi_mock_response();
+        let results = parse_asi(&body);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].provider_id, "agent-skills-index");
+        assert_eq!(results[0].external_id, "dev/lint-fix");
+        assert!(results[0].has_skill_md);
+        assert_eq!(results[1].external_id, "other/security-scan");
+        assert!(!results[1].has_skill_md);
+    }
+
+    #[test]
+    fn deduplication_keeps_higher_stars() {
+        let skillsmd = parse_skillsmd(&skillsmd_mock_response());
+        let asi = parse_asi(&asi_mock_response());
+
+        let mut all = Vec::new();
+        all.extend(skillsmd);
+        all.extend(asi);
+
+        let deduped = merge_and_dedup(all);
+
+        let lint_entries: Vec<_> = deduped.iter().filter(|c| c.name == "lint-fix").collect();
+        assert_eq!(lint_entries.len(), 1);
+        assert_eq!(lint_entries[0].stars, Some(15));
+        assert_eq!(lint_entries[0].provider_id, "agent-skills-index");
+    }
+
+    #[test]
+    fn malformed_item_is_skipped_without_failing_search() {
+        let body = serde_json::json!([
+            { "repo": "good/skill", "name": "good", "stars": 5 },
+            { "name_missing_repo": true },
+            null
+        ]);
+        let results = parse_skillsmd(&body);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].external_id, "good/skill");
+    }
+
+    #[test]
+    fn empty_results_merge_cleanly() {
+        let deduped = merge_and_dedup(Vec::new());
+        assert!(deduped.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cache_returns_cached_flag_on_hit() {
+        let cache = crate::state::MarketSearchCache::new();
+
+        let dto = MarketSearchResultDto {
+            query: "test".into(),
+            results: vec![MarketSkillCandidateDto {
+                provider_id: "skillsmd".into(),
+                external_id: "a/b".into(),
+                name: "b".into(),
+                description: None,
+                repo_url: None,
+                stars: Some(1),
+                updated_at: None,
+                categories: Vec::new(),
+                has_skill_md: true,
+            }],
+            provider_errors: Vec::new(),
+            cached: false,
+        };
+
+        cache.put("test:skillsmd".into(), dto.clone()).await;
+
+        let hit = cache.get("test:skillsmd").await;
+        assert!(hit.is_some());
+        // The stored dto has cached=false; the command sets cached=true on return.
+        assert!(!hit.unwrap().cached);
+    }
+
+    #[tokio::test]
+    async fn cache_miss_for_unknown_key() {
+        let cache = crate::state::MarketSearchCache::new();
+        assert!(cache.get("nonexistent").await.is_none());
+    }
+}
+
 fn installation_from_dto(dto: InstallationDto) -> Result<Installation, ErrorDto> {
     use chrono::DateTime;
     use std::path::PathBuf;
@@ -2137,7 +3541,10 @@ mod tests {
                 )),
                 translate_config_path: home.path().join("translate.toml"),
                 pending_import: tokio::sync::Mutex::new(None),
+                pending_market_origin: tokio::sync::Mutex::new(None),
                 summary_failures: Arc::new(summary::SummaryFailureCache::new()),
+                snapshot_dir: home.path().join("snapshots"),
+                market_cache: crate::state::MarketSearchCache::new(),
             })
             .invoke_handler(tauri::generate_handler![
                 translate_artifact,

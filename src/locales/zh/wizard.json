@@ -39,6 +39,39 @@
     "promptInjection": "提示词注入",
     "largePayload": "超大负载"
   },
+  "warningExplain": {
+    "DangerousShellPattern": {
+      "pipeShell": "这个 Skill 会从远程下载代码并直接在你的终端执行——如果下载源被篡改，任何恶意命令都可能在你的电脑上运行。",
+      "rmRf": "这个 Skill 会永久删除文件。一旦路径错误，可能会清空你的文档甚至整个主目录。",
+      "sudo": "这个 Skill 会以管理员权限运行命令，绕过系统所有安全保护。",
+      "eval": "这个 Skill 会在运行时动态拼接并执行命令，AI 可能被诱导执行有害操作。",
+      "base64": "这个 Skill 会在运行时解码隐藏内容——它的真实行为可能在源代码中看不到。",
+      "chmod": "这个 Skill 会修改文件权限使其可执行，相当于在你的电脑上创建了新程序。",
+      "_default": "这个 Skill 包含可能损害你文件或系统的 Shell 命令。"
+    },
+    "PromptInjection": {
+      "tokenMarker": "这个 Skill 包含原始模型标记（token marker），可能劫持 AI 的指令流，使其执行攻击者指定的操作。",
+      "ignoreEn": "这个 Skill 试图让 AI 忘记安全规则。一旦成功，AI 可能无视所有保护措施，执行有害指令。",
+      "ignoreZh": "这个 Skill 试图用中文指令让 AI 忽略之前的安全规则，一旦成功，AI 可能无视所有保护。",
+      "jailbreak": "这个 Skill 包含明确的越狱（jailbreak）指令——它正在尝试绕过 AI 的安全护栏。",
+      "systemPrompt": "这个 Skill 包含系统提示词覆盖指令，可能用攻击者控制的内容替换 AI 的核心指令。",
+      "_default": "这个 Skill 包含可能欺骗 AI 忽略安全规则的内容。"
+    },
+    "ExecutableCommand": {
+      "executableFile": "此文件可以在你的电脑上运行程序。Shell 脚本、构建文件和 package 配置可能在安装或使用 Skill 时执行代码。",
+      "_default": "此文件包含 AI 可能在你的电脑上执行的命令。"
+    },
+    "McpConfig": {
+      "mcpServer": "此文件配置了 MCP 服务器连接。MCP 服务器可以访问你的文件系统、运行命令，或代表 AI 连接外部服务。",
+      "_default": "此文件设置了 AI 可用来执行操作的外部服务器连接。"
+    },
+    "LargePayload": {
+      "singleFile": "此文件对一个 Skill 来说异常大。大文件可能隐藏了额外内容，或表明这个 Skill 的功能超出预期。",
+      "totalSize": "整个包体异常大，可能包含隐藏内容或超出 Skill 正常所需的捆绑程序。",
+      "_default": "这个 Skill 的文件体积异常大，可能包含隐藏或意外的内容。"
+    }
+  },
+  "warningEvidence": "依据",
   "review": {
     "title": "AI 兼容性评级",
     "loading": "正在评估兼容性…",
@@ -72,11 +105,19 @@
     "askAi": {
       "unconfigured": "Ask AI 尚未配置。请前往 Settings 配置 OpenAI 兼容 provider，即可用自然语言描述 skill。",
       "openSettings": "打开 Settings",
-      "ready": "Ask AI 会判断这是否是安装请求，并提取搜索关键词；不会安装或写入任何文件。",
+      "ready": "Ask AI 会判断这是否是安装请求，提取搜索关键词，并优先搜索策展注册表，必要时再回落到 GitHub；不会安装或写入任何文件。",
       "classify": "分类",
       "classifying": "正在分类请求…",
       "notInstall": "不是安装请求",
-      "searchQuery": "搜索关键词"
+      "searchQuery": "搜索关键词",
+      "searching": "正在搜索策展注册表…",
+      "searchResults": "在策展注册表中找到的 Skills",
+      "fallbackResults": "策展市场无匹配结果，正在显示 GitHub 兜底结果",
+      "githubFallback": "GitHub 兜底",
+      "noResults": "未在策展注册表或 GitHub 中找到匹配的 Skill，请尝试在上方直接粘贴 URL。",
+      "searchFailed": "搜索失败，请尝试在上方直接粘贴 URL。",
+      "previewThis": "预览",
+      "manualHint": "或在上方直接粘贴 GitHub URL 来导入。"
     },
     "submitGate": {
       "needTarget": "请先在上方选择至少一个目标工具。",

@@ -178,16 +178,20 @@ function LineageBlock({ preview }: { preview: SkillDraftPreviewDto }) {
     preview.lineage.sourceKind === "adaptation"
       ? "lineage.adaptedFrom"
       : "lineage.forkedFrom";
-  const sha = preview.lineage.sourceHash.slice(0, 8);
+  // Draft lineage (fork/adaptation/edit) always carries these; guard anyway
+  // since the shared LineageDto now also covers import sources (Issue 016).
+  const sha = preview.lineage.sourceHash?.slice(0, 8);
   return (
     <div className="rounded border border-gray-800 px-3 py-2 text-[11px] text-gray-400">
       <p className="text-gray-300">
         <span className="text-gray-500">{t("lineage.header")}: </span>
         {t(headerKey)} <code className="text-gray-200">{preview.lineage.parentName}</code>
       </p>
-      <p className="text-gray-500 mt-0.5">
-        {t("lineage.sha")}: <code>{sha}</code>
-      </p>
+      {sha && (
+        <p className="text-gray-500 mt-0.5">
+          {t("lineage.sha")}: <code>{sha}</code>
+        </p>
+      )}
     </div>
   );
 }

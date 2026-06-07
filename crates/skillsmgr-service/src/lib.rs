@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use skillsmgr_adapters::{claude_code, codex, gemini, hermes::HermesAdapter, opencode};
 use skillsmgr_core::{
@@ -12,7 +13,9 @@ use skillsmgr_fetch::{
     preview_github_import, preview_local_import, preview_raw_url_import, ImportCandidate,
     ImportPreview,
 };
-use skillsmgr_registry::{RecordEventInput, Registry, RegistryEvent};
+use skillsmgr_registry::{
+    RecordEventInput, Registry, RegistryEvent, RegistrySnapshot, SnapshotInput,
+};
 use skillsmgr_scan::{default_scopes, discover_project_root, scan_all, ScanError, ScanResult};
 
 #[derive(Debug, Clone)]
@@ -152,6 +155,7 @@ impl Service {
                 target: Some(installation.target.tool_id().to_string()),
                 succeeded: true,
                 error_message: None,
+                metadata_json: None,
             });
         }
         Ok(installation)
@@ -187,6 +191,7 @@ impl Service {
                 target: Some(installation.target.tool_id().to_string()),
                 succeeded: true,
                 error_message: None,
+                metadata_json: None,
             });
         }
         Ok(installation)
@@ -205,6 +210,7 @@ impl Service {
                 target: Some(installation.target.tool_id().to_string()),
                 succeeded: true,
                 error_message: None,
+                metadata_json: None,
             });
         }
         Ok(())
@@ -268,6 +274,98 @@ impl Service {
                 .unwrap_or(0);
         }
         0
+    }
+
+    // ── Telemetry aggregate queries ─────────────────────────────────────────
+
+    pub async fn event_counts_by_type(&self, since: DateTime<Utc>) -> Vec<(String, usize)> {
+        if let Some(registry) = &self.registry {
+            return registry
+                .lock()
+                .await
+                .event_counts_by_type(since)
+                .unwrap_or_default();
+        }
+        vec![]
+    }
+
+    pub async fn event_counts_by_target(&self, since: DateTime<Utc>) -> Vec<(String, usize)> {
+        if let Some(registry) = &self.registry {
+            return registry
+                .lock()
+                .await
+                .event_counts_by_target(since)
+                .unwrap_or_default();
+        }
+        vec![]
+    }
+
+    pub async fn failure_reasons(
+        &self,
+        since: DateTime<Utc>,
+        limit: usize,
+    ) -> Vec<(String, usize)> {
+        if let Some(registry) = &self.registry {
+            return registry
+                .lock()
+                .await
+                .failure_reasons(since, limit)
+                .unwrap_or_default();
+        }
+        vec![]
+    }
+
+    // ── Snapshot management ──────────────────────────────────────────────────
+
+    pub async fn record_snapshot(&self, input: SnapshotInput) -> Result<RegistrySnapshot> {
+        let registry = self
+            .registry
+            .as_ref()
+            .ok_or_else(|| SkillsMgrError::Registry("no registry configured".to_string()))?;
+        registry.lock().await.record_snapshot(input)
+    }
+
+    pub async fn snapshots_for_installation(
+        &self,
+        installation_id: uuid::Uuid,
+    ) -> Vec<RegistrySnapshot> {
+        if let Some(registry) = &self.registry {
+            return registry
+                .lock()
+                .await
+                .snapshots_for_installation(installation_id)
+                .unwrap_or_default();
+        }
+        vec![]
+    }
+
+    pub async fn latest_snapshot(&self, installation_id: uuid::Uuid) -> Option<RegistrySnapshot> {
+        if let Some(registry) = &self.registry {
+            return registry
+                .lock()
+                .await
+                .latest_snapshot(installation_id)
+                .unwrap_or(None);
+        }
+        None
+    }
+
+    pub async fn source_for_artifact(&self, artifact_id: uuid::Uuid) -> Option<Source> {
+        if let Some(registry) = &self.registry {
+            return registry
+                .lock()
+                .await
+                .source_for_artifact(artifact_id)
+                .unwrap_or(None);
+        }
+        None
+    }
+
+    pub async fn artifact_name_by_id(&self, artifact_id: uuid::Uuid) -> Option<String> {
+        if let Some(registry) = &self.registry {
+            return registry.lock().await.artifact_name_by_id(artifact_id);
+        }
+        None
     }
 
     /// Targets that this Service can install into right now. An adapter is

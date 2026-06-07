@@ -17,6 +17,114 @@
   "close": "Close",
   "back": "← Back",
   "dashboard": "Dashboard",
+  "skillsMarket": "Skills Market",
+  "market": {
+    "kicker": "Third-party discovery",
+    "title": "Skills Market",
+    "subtitle": "M-Skills will not operate its own marketplace. This view records which third-party Skill markets expose an integration path we can safely connect to before any install is routed back through preview, audit, and confirmation.",
+    "importAction": "Import by URL",
+    "decisionTitle": "Current integration decision",
+    "decision": {
+      "0": "Prefer API or MCP access that is explicitly documented by the provider.",
+      "1": "Do not iframe a marketplace page unless the provider allows embedding and the install path still returns to M-Skills.",
+      "2": "Every selected Skill must re-enter the existing raw URL or draft import flow before files are written."
+    },
+    "providersTitle": "Confirmed candidates",
+    "providersSubtitle": "These sources publish access details we can build against; they are not yet installed automatically.",
+    "evidence": "Confirmed access",
+    "integration": "M-Skills integration",
+    "searchPlaceholder": "Search skills across registries…",
+    "searchButton": "Search",
+    "searching": "Searching…",
+    "noResults": "No skills found for this query.",
+    "previewButton": "Preview",
+    "previewing": "Loading preview…",
+    "providerTab": {
+      "all": "All",
+      "skillsmd": "SkillsMD",
+      "agent-skills-index": "Agent Skills Index"
+    },
+    "providerBadge": {
+      "skillsmd": "SkillsMD",
+      "agent-skills-index": "ASI"
+    },
+    "hasSkillMd": "SKILL.md",
+    "noSkillMd": "No SKILL.md",
+    "providerError": "{{provider}} returned an error: {{message}}",
+    "rateLimitedCountdown": "{{provider}} rate limited — retry in {{seconds}}s",
+    "rateLimitedReady": "{{provider}} rate limit cleared",
+    "retryButton": "Retry",
+    "cachedResults": "Cached results (less than 60 s old)",
+    "stars": "★ {{count}}",
+    "openDocs": "Docs / API",
+    "openMarket": "Open market",
+    "providers": {
+      "skillsmd": {
+        "name": "SkillsMD",
+        "scope": "Open Agent Skills Registry",
+        "status": "API OK",
+        "summary": "Best first candidate for a read-only market shell: it exposes public search and detail endpoints and is designed as an open registry.",
+        "evidence": {
+          "0": "Public REST API, no authentication required.",
+          "1": "Search, leaderboard, stats, and repository detail endpoints are documented.",
+          "2": "CORS is enabled and the docs ask clients to cache responses respectfully."
+        },
+        "actions": {
+          "0": "Use as the initial searchable source for community Skill discovery.",
+          "1": "Resolve repository results to a raw SKILL.md source before preview.",
+          "2": "Cache responses and run compatibility review locally before install."
+        }
+      },
+      "agentSkillsIndex": {
+        "name": "Agent Skills Index",
+        "scope": "Large public Skill index",
+        "status": "API OK",
+        "summary": "Strong second candidate because its public detail endpoint includes Skill metadata and SKILL.md content.",
+        "evidence": {
+          "0": "Public endpoints do not require authentication.",
+          "1": "The API supports paginated skill search, categories, and per-skill detail.",
+          "2": "The documented rate limit is 100 requests per minute per IP."
+        },
+        "actions": {
+          "0": "Use for broad discovery and category browsing.",
+          "1": "Treat returned SKILL.md content as untrusted import input.",
+          "2": "Stage fetched content, then run audit and confirm-before-write."
+        }
+      },
+      "agensi": {
+        "name": "Agensi",
+        "scope": "Commercial SKILL.md marketplace",
+        "status": "MCP path",
+        "summary": "Promising for a future connector, but the documented access path is agent MCP rather than a simple embedded web market.",
+        "evidence": {
+          "0": "Free catalog search is exposed through the Agensi MCP server.",
+          "1": "The MCP advertises search, popular, category, detail, install, and account tools.",
+          "2": "Paid installs use credits and require user confirmation."
+        },
+        "actions": {
+          "0": "Keep as a future MCP connector, not the first web-shell provider.",
+          "1": "Never let its install tool write directly into M-Skills targets.",
+          "2": "Require an explicit user account and purchase state before paid flows."
+        }
+      },
+      "larryBrain": {
+        "name": "LarryBrain",
+        "scope": "OpenClaw-focused Skill marketplace",
+        "status": "API gated",
+        "summary": "Useful for OpenClaw-oriented Skills; public search is available, while premium downloads need an API key.",
+        "evidence": {
+          "0": "Marketplace search is public and does not require authentication.",
+          "1": "Free skill file downloads can work without an API key.",
+          "2": "Premium access requires an x-api-key header and the API is rate limited."
+        },
+        "actions": {
+          "0": "Use only after target compatibility is clear for OpenClaw-style Skills.",
+          "1": "Handle premium access as an explicit user credential flow.",
+          "2": "Send downloaded files through the normal audit and confirmation path."
+        }
+      }
+    }
+  },
   "localLibrary": "Local Library",
   "readyArtifacts": "Ready",
   "scanOk": "Scan OK",

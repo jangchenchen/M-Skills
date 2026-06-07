@@ -27,5 +27,7 @@
   "intentNotConfigured": "Ask AI 需要配置 LLM 提供商，前往 Settings 配置即可启用。",
   "intentParseFailed": "Ask AI 返回的内容无法解析：{{reason}}",
   "summarizeNotConfigured": "AI 总结已跳过：前往 Settings 配置 LLM 提供商即可启用。",
-  "summarizeParseFailed": "AI 总结返回的内容无法解析：{{reason}}"
+  "summarizeParseFailed": "AI 总结返回的内容无法解析：{{reason}}",
+  "searchFailed": "GitHub 搜索失败：{{reason}}",
+  "searchRateLimited": "GitHub 搜索已达速率限制，请稍后再试。"
 }

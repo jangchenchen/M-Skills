@@ -3201,6 +3201,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "log",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2",
@@ -4926,6 +4927,7 @@ dependencies = [
 name = "skillsmgr-service"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "skillsmgr-adapters",
@@ -4935,6 +4937,7 @@ dependencies = [
  "skillsmgr-scan",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

@@ -165,6 +165,8 @@ export interface AuditWarningDto {
     | "LargePayload";
   severity: AuditSeverity;
   message: string;
+  detail?: string;
+  detailKey?: string;
 }
 
 export type AuditSeverity = "low" | "medium" | "high";
@@ -292,15 +294,28 @@ export function sourceLabel(s: SourceDto): string {
 
 // ── Issue 007 Batch 2: skill draft preview ────────────────────────────────────
 
-export type SkillDraftSourceKind = "fork" | "adaptation";
+export type SkillDraftSourceKind = "fork" | "adaptation" | "edit";
+
+/// Union across draft + import provenance. The shared `LineageDto` (Issue 016)
+/// is written by both the draft path and the import/market install path.
+export type LineageSourceKind =
+  | SkillDraftSourceKind
+  | "market"
+  | "github"
+  | "url"
+  | "local";
 
 export interface LineageDto {
-  sourceKind: SkillDraftSourceKind;
+  sourceKind: LineageSourceKind;
+  providerId?: string;
+  externalId?: string;
   sourceTool?: string;
   sourcePath?: string;
   sourceUrl?: string;
-  sourceHash: string;
-  parentName: string;
+  sourceRev?: string;
+  sourceHash?: string;
+  parentName?: string;
+  fetchedAt?: string;
 }
 
 export interface NameConflictDto {
@@ -380,6 +395,56 @@ export interface SkillIntentOutcomeDto {
   model: string;
 }
 
+// ── GitHub skill search ──────────────────────────────────────────────────────
+
+export interface GitHubSkillResultDto {
+  name: string;
+  owner: string;
+  description: string | null;
+  htmlUrl: string;
+  stars: number;
+}
+
+// ── Market search ───────────────────────────────────────────────────────────
+
+export type MarketProviderId = "skillsmd" | "agent-skills-index";
+
+export interface MarketSearchRequest {
+  query: string;
+  providers: MarketProviderId[];
+}
+
+export interface MarketSkillCandidateDto {
+  providerId: string;
+  externalId: string;
+  name: string;
+  description: string | null;
+  repoUrl: string | null;
+  stars: number | null;
+  updatedAt: string | null;
+  categories: string[];
+  hasSkillMd: boolean;
+}
+
+export interface MarketProviderErrorDto {
+  providerId: string;
+  message: string;
+  isRateLimited: boolean;
+  retryAfterSecs: number | null;
+}
+
+export interface MarketSearchResultDto {
+  query: string;
+  results: MarketSkillCandidateDto[];
+  providerErrors: MarketProviderErrorDto[];
+  cached: boolean;
+}
+
+export interface MarketPreviewRequest {
+  providerId: string;
+  externalId: string;
+}
+
 // ── AI skill summary (auto-generated post-install) ────────────────────────────
 
 export interface SkillSummaryDto {
@@ -398,4 +463,44 @@ export interface SkillSummaryRequest {
   artifact: ArtifactDto;
   locale: string;
   forceRefresh?: boolean;
+}
+
+// ── Telemetry ────────────────────────────────────────────────────────────────
+
+export interface TelemetryDto {
+  periodLabel: string;
+  scanCount: number;
+  installCount: number;
+  uninstallCount: number;
+  adaptationCount: number;
+  failureCount: number;
+  topFailureReasons: { reason: string; count: number }[];
+  targetDistribution: { target: string; count: number }[];
+  riskDistribution: { riskLevel: string; count: number }[];
+}
+
+// ── Update Detection + Rollback ──────────────────────────────────────────────
+
+export type UpdateStatus =
+  | "upToDate"
+  | "updateAvailable"
+  | "locallyModified"
+  | "diverged"
+  | "sourceUnreachable"
+  | "noSource";
+
+export interface UpdateStatusDto {
+  status: UpdateStatus;
+  currentContentSha256?: string;
+  upstreamRev?: string;
+  storedRev?: string;
+  snapshotCount: number;
+}
+
+export interface SnapshotDto {
+  id: string;
+  installationId: string;
+  contentSha256: string;
+  reason: string;
+  createdAt: string;
 }

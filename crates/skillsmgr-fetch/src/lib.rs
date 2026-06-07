@@ -79,6 +79,10 @@ pub struct AuditWarning {
     pub kind: AuditWarningKind,
     pub severity: AuditSeverity,
     pub message: String,
+    /// Raw matched pattern used as evidence (e.g. `"| sh"`, `"sudo"`).
+    pub detail: Option<String>,
+    /// I18n sub-key for frontend locale lookup (e.g. `"pipeShell"`, `"sudo"`).
+    pub detail_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,7 +280,9 @@ pub fn audit_skill_body(body: &str) -> ImportAudit {
             path: skill_path.clone(),
             kind: AuditWarningKind::PromptInjection,
             severity: AuditSeverity::High,
-            message: format!("possible prompt-injection marker: {hit}"),
+            message: format!("possible prompt-injection marker: {}", hit.pattern),
+            detail: Some(hit.pattern.to_string()),
+            detail_key: Some(hit.detail_key.to_string()),
         });
     }
 
@@ -285,7 +291,9 @@ pub fn audit_skill_body(body: &str) -> ImportAudit {
             path: skill_path.clone(),
             kind: AuditWarningKind::DangerousShellPattern,
             severity: AuditSeverity::High,
-            message: format!("dangerous pattern: {hit}"),
+            message: format!("dangerous pattern: {}", hit.pattern),
+            detail: Some(hit.pattern.to_string()),
+            detail_key: Some(hit.detail_key.to_string()),
         });
     }
 
@@ -441,6 +449,70 @@ async fn fetch_raw_url(url: &str) -> Result<Vec<u8>> {
         return Err(raw_url_error(url, "downloaded file is empty".to_string()));
     }
     Ok(bytes)
+}
+
+pub async fn check_github_head(url: &str) -> Result<String> {
+    let url = url.to_string();
+    tokio::task::spawn_blocking(move || check_github_head_blocking(&url))
+        .await
+        .map_err(|error| SkillsMgrError::Git {
+            input: "ls-remote".to_string(),
+            message: error.to_string(),
+        })?
+}
+
+fn check_github_head_blocking(url: &str) -> Result<String> {
+    let clone_url = normalize_github_url(url);
+    let output = Command::new("git")
+        .args(["ls-remote", "--heads", &clone_url, "HEAD"])
+        .output()
+        .map_err(|source| SkillsMgrError::Git {
+            input: url.to_string(),
+            message: format!("git ls-remote failed: {source}"),
+        })?;
+    if !output.status.success() {
+        let output2 = Command::new("git")
+            .args(["ls-remote", &clone_url])
+            .output()
+            .map_err(|source| SkillsMgrError::Git {
+                input: url.to_string(),
+                message: format!("git ls-remote failed: {source}"),
+            })?;
+        if !output2.status.success() {
+            return Err(SkillsMgrError::Git {
+                input: url.to_string(),
+                message: format!("git ls-remote failed: {}", command_output_message(&output2)),
+            });
+        }
+        let stdout = String::from_utf8_lossy(&output2.stdout);
+        let sha = stdout
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap_or("")
+            .to_string();
+        if sha.is_empty() {
+            return Err(SkillsMgrError::Git {
+                input: url.to_string(),
+                message: "ls-remote returned no refs".to_string(),
+            });
+        }
+        return Ok(sha);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let sha = stdout
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap_or("")
+        .to_string();
+    if sha.is_empty() {
+        return Err(SkillsMgrError::Git {
+            input: url.to_string(),
+            message: "ls-remote returned empty HEAD".to_string(),
+        });
+    }
+    Ok(sha)
 }
 
 fn clone_with_gix(url: &str, clone_root: &Path) -> Result<String> {
@@ -599,28 +671,32 @@ fn audit_stage_blocking(root: &Path) -> Result<ImportAudit> {
     let total_size: u64 = files.iter().map(|file| file.size_bytes).sum();
     for file in &files {
         if file.size_bytes > LARGE_FILE_THRESHOLD {
+            let size_mb = file.size_bytes as f64 / 1_048_576.0;
             warnings.push(AuditWarning {
                 path: file.path.clone(),
                 kind: AuditWarningKind::LargePayload,
                 severity: AuditSeverity::Medium,
                 message: format!(
-                    "file is {:.1} MB (> {} MB threshold)",
-                    file.size_bytes as f64 / 1_048_576.0,
+                    "file is {size_mb:.1} MB (> {} MB threshold)",
                     LARGE_FILE_THRESHOLD / 1_048_576,
                 ),
+                detail: Some(format!("{size_mb:.1} MB")),
+                detail_key: Some("singleFile".to_string()),
             });
         }
     }
     if total_size > LARGE_PAYLOAD_TOTAL_THRESHOLD {
+        let total_mb = total_size as f64 / 1_048_576.0;
         warnings.push(AuditWarning {
             path: PathBuf::new(),
             kind: AuditWarningKind::LargePayload,
             severity: AuditSeverity::Medium,
             message: format!(
-                "total staged size is {:.1} MB (> {} MB threshold)",
-                total_size as f64 / 1_048_576.0,
+                "total staged size is {total_mb:.1} MB (> {} MB threshold)",
                 LARGE_PAYLOAD_TOTAL_THRESHOLD / 1_048_576,
             ),
+            detail: Some(format!("{total_mb:.1} MB")),
+            detail_key: Some("totalSize".to_string()),
         });
     }
 
@@ -720,6 +796,8 @@ fn collect_warnings(path: &Path, relative: &Path, warnings: &mut Vec<AuditWarnin
             kind: AuditWarningKind::ExecutableCommand,
             severity: AuditSeverity::Medium,
             message: "file may define executable commands".to_string(),
+            detail: Some(filename.to_string()),
+            detail_key: Some("executableFile".to_string()),
         });
 
         if let Some(content) = read_for_scan(path) {
@@ -728,7 +806,9 @@ fn collect_warnings(path: &Path, relative: &Path, warnings: &mut Vec<AuditWarnin
                     path: relative.to_path_buf(),
                     kind: AuditWarningKind::DangerousShellPattern,
                     severity: AuditSeverity::High,
-                    message: format!("dangerous pattern: {hit}"),
+                    message: format!("dangerous pattern: {}", hit.pattern),
+                    detail: Some(hit.pattern.to_string()),
+                    detail_key: Some(hit.detail_key.to_string()),
                 });
             }
         }
@@ -741,7 +821,9 @@ fn collect_warnings(path: &Path, relative: &Path, warnings: &mut Vec<AuditWarnin
                     path: relative.to_path_buf(),
                     kind: AuditWarningKind::PromptInjection,
                     severity: AuditSeverity::High,
-                    message: format!("possible prompt-injection marker: {hit}"),
+                    message: format!("possible prompt-injection marker: {}", hit.pattern),
+                    detail: Some(hit.pattern.to_string()),
+                    detail_key: Some(hit.detail_key.to_string()),
                 });
             }
         }
@@ -760,6 +842,8 @@ fn collect_warnings(path: &Path, relative: &Path, warnings: &mut Vec<AuditWarnin
                 kind: AuditWarningKind::McpConfig,
                 severity: AuditSeverity::Medium,
                 message: "file may configure MCP servers".to_string(),
+                detail: Some(filename.to_string()),
+                detail_key: Some("mcpServer".to_string()),
             });
         }
     }
@@ -781,47 +865,66 @@ fn read_for_scan(path: &Path) -> Option<String> {
 /// Substring-based scan for shell snippets that frequently appear in supply-chain
 /// attacks. Patterns are intentionally broad — false positives are acceptable
 /// because the result is shown to the user, not used to auto-block.
-fn scan_dangerous_shell_patterns(content: &str) -> Vec<&'static str> {
-    const NEEDLES: &[&str] = &[
-        "| sh",
-        "| bash",
-        "|sh\n",
-        "|bash\n",
-        "rm -rf /",
-        "rm -rf ~",
-        "sudo ",
-        " eval ",
-        "eval $",
-        "eval \"",
-        "base64 -d",
-        "base64 --decode",
-        "chmod +x",
+struct PatternHit {
+    pattern: &'static str,
+    detail_key: &'static str,
+}
+
+fn scan_dangerous_shell_patterns(content: &str) -> Vec<PatternHit> {
+    const NEEDLES: &[(&str, &str)] = &[
+        ("| sh", "pipeShell"),
+        ("| bash", "pipeShell"),
+        ("|sh\n", "pipeShell"),
+        ("|bash\n", "pipeShell"),
+        ("rm -rf /", "rmRf"),
+        ("rm -rf ~", "rmRf"),
+        ("sudo ", "sudo"),
+        (" eval ", "eval"),
+        ("eval $", "eval"),
+        ("eval \"", "eval"),
+        ("base64 -d", "base64"),
+        ("base64 --decode", "base64"),
+        ("chmod +x", "chmod"),
     ];
     NEEDLES
         .iter()
-        .copied()
-        .filter(|needle| content.contains(needle))
+        .filter(|(pattern, _)| content.contains(pattern))
+        .map(|(pattern, key)| PatternHit {
+            pattern,
+            detail_key: key,
+        })
         .collect()
 }
 
-fn scan_prompt_injection(content: &str) -> Vec<&'static str> {
-    const LITERAL_NEEDLES: &[&str] = &["<|im_start|>", "忽略以上", "忽略之前", "jailbreak"];
-    const CASE_INSENSITIVE_NEEDLES: &[&str] = &[
-        "ignore previous",
-        "ignore the previous",
-        "ignore all previous",
-        "disregard previous",
+fn scan_prompt_injection(content: &str) -> Vec<PatternHit> {
+    const LITERAL_NEEDLES: &[(&str, &str)] = &[
+        ("<|im_start|>", "tokenMarker"),
+        ("忽略以上", "ignoreZh"),
+        ("忽略之前", "ignoreZh"),
+        ("jailbreak", "jailbreak"),
+    ];
+    const CASE_INSENSITIVE_NEEDLES: &[(&str, &str)] = &[
+        ("ignore previous", "ignoreEn"),
+        ("ignore the previous", "ignoreEn"),
+        ("ignore all previous", "ignoreEn"),
+        ("disregard previous", "ignoreEn"),
     ];
 
     let lower = content.to_lowercase();
-    let mut hits: Vec<&'static str> = LITERAL_NEEDLES
+    let mut hits: Vec<PatternHit> = LITERAL_NEEDLES
         .iter()
-        .copied()
-        .filter(|needle| content.contains(needle))
+        .filter(|(needle, _)| content.contains(needle))
+        .map(|(pattern, key)| PatternHit {
+            pattern,
+            detail_key: key,
+        })
         .collect();
-    for needle in CASE_INSENSITIVE_NEEDLES {
+    for (needle, key) in CASE_INSENSITIVE_NEEDLES {
         if lower.contains(needle) {
-            hits.push(needle);
+            hits.push(PatternHit {
+                pattern: needle,
+                detail_key: key,
+            });
         }
     }
     if content.lines().any(|line| {
@@ -829,7 +932,10 @@ fn scan_prompt_injection(content: &str) -> Vec<&'static str> {
             .to_ascii_lowercase()
             .starts_with("system:")
     }) {
-        hits.push("system:");
+        hits.push(PatternHit {
+            pattern: "system:",
+            detail_key: "systemPrompt",
+        });
     }
     hits
 }

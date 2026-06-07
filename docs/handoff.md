@@ -167,7 +167,7 @@ without re-deriving context.
 | **2：演化** | 2.1 更新检测 + 回滚（Item 9） | pending | 4 周 |
 | | 2.2 跨工具适配补全（非 Claude→Codex 单方向） | pending | 1 周 |
 | | 2.3 本地遥测埋点基础 | pending | 1 周 |
-| **3：走出本地** | 3.1 = Issue 013 GitHub Search MVP + 发现页 | pending | 6-8 周 |
+| **3：走出本地** | 3.1 发现页 = Issue 015 市场接入 ✅ 已落地（SkillsMD/ASI）；Issue 013 GitHub Search 降为 fallback | 部分完成 | — |
 | | 3.2 模板化 skill（Item 12） | pending | 4-6 周 |
 
 商业化判断（用户原话）："软件门槛低，内容/插件/创意才是关键"——阶段 3 是从"管理工具"转"分发平台"的拐点。
@@ -180,7 +180,7 @@ without re-deriving context.
 |---|---|---|
 | Item 2 | Claude Code / opencode / Hermes 没有 native disable，怎么禁用？ | `.m-skills.json` 加 `disabled: true` + 文件名加 `.disabled` 后缀双保险 |
 | Item 9 | 更新检测频率、联网默认、备份数量 | 启动 + 每 24h；默认 opt-in；每 skill 留最近 3 个版本 |
-| Item 11 | 市场数据源 | 见 Issue 013：GitHub Code Search 作 MVP |
+| Item 11 | 市场数据源 | ✅ 已拍板（2026-06-08）：SkillsMD + Agent Skills Index 经 Issue 015 落地；GitHub Code Search 降为 fallback |
 | Item 12 | 模板化抽象深度 | A（fork 时变量替换）→ B（frontmatter `parameters` 段）渐进；C（模板+instance 继承）视采纳率再说 |
 
 Item 1（Smart Add）的 4 个决策**已经在 Issue 008 的 Decisions 段落里拍定**——不要再问用户。

@@ -9,24 +9,28 @@ import { ArtifactList } from "./components/ArtifactList";
 import { DashboardPanel } from "./components/DashboardPanel";
 import { DetailPanel } from "./components/DetailPanel";
 import { ImportWizard } from "./components/ImportWizard";
+import { MarketPanel } from "./components/MarketPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import {
   buildSkillCategoryCounts,
   type SkillCategoryId,
 } from "./skillCategories";
 import { useErrorMessage } from "./useErrorMessage";
-import type { ArtifactKind } from "./types";
+import type { ArtifactKind, ImportPreviewDto } from "./types";
+
+type ActiveView = "dashboard" | "library" | "market";
 
 export function App() {
   const qc = useQueryClient();
+  const [activeView, setActiveView] = useState<ActiveView>("dashboard");
   const [selectedKind, setSelectedKind] = useState<ArtifactKind | null>(null);
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [selectedTool, setSelectedTool] = useState<string | null>(null);
   const [selectedSkillCategory, setSelectedSkillCategory] =
     useState<SkillCategoryId>("all");
-  const [showDashboard, setShowDashboard] = useState(true);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [marketPreview, setMarketPreview] = useState<ImportPreviewDto | null>(null);
   const { t } = useTranslation("common");
   const errorMessage = useErrorMessage();
 
@@ -46,14 +50,14 @@ export function App() {
   }, [qc]);
 
   const handleSelect = (name: string, kind: ArtifactKind) => {
-    setShowDashboard(false);
+    setActiveView("library");
     setSelectedName(name);
     setSelectedKind(kind);
     if (kind !== "Skill") setSelectedSkillCategory("all");
   };
 
   const handleInstalled = (name: string, kind: ArtifactKind) => {
-    setShowDashboard(false);
+    setActiveView("library");
     setSelectedTool(null);
     setSelectedKind(kind);
     setSelectedName(name);
@@ -61,7 +65,15 @@ export function App() {
   };
 
   const handleDashboardSelect = () => {
-    setShowDashboard(true);
+    setActiveView("dashboard");
+    setSelectedKind(null);
+    setSelectedName(null);
+    setSelectedTool(null);
+    setSelectedSkillCategory("all");
+  };
+
+  const handleMarketSelect = () => {
+    setActiveView("market");
     setSelectedKind(null);
     setSelectedName(null);
     setSelectedTool(null);
@@ -69,7 +81,7 @@ export function App() {
   };
 
   const handleKindSelect = (k: ArtifactKind | null) => {
-    setShowDashboard(false);
+    setActiveView("library");
     setSelectedKind(k);
     setSelectedName(null);
     setSelectedTool(null);
@@ -77,7 +89,7 @@ export function App() {
   };
 
   const handleToolSelect = (tool: string) => {
-    setShowDashboard(false);
+    setActiveView("library");
     setSelectedTool(tool);
     setSelectedKind(null);
     setSelectedName(null);
@@ -85,7 +97,7 @@ export function App() {
   };
 
   const handleSkillCategorySelect = (category: SkillCategoryId) => {
-    setShowDashboard(false);
+    setActiveView("library");
     setSelectedKind("Skill");
     setSelectedTool(null);
     setSelectedName(null);
@@ -96,7 +108,7 @@ export function App() {
     name: string,
     kind: ArtifactKind
   ) => {
-    setShowDashboard(false);
+    setActiveView("library");
     setSelectedTool(null);
     setSelectedKind(kind);
     setSelectedName(name);
@@ -135,8 +147,9 @@ export function App() {
         selectedKind={selectedKind}
         selectedSkillCategory={selectedSkillCategory}
         selectedTool={selectedTool}
-        showDashboard={showDashboard}
+        activeView={activeView}
         onDashboardSelect={handleDashboardSelect}
+        onMarketSelect={handleMarketSelect}
         onKindSelect={handleKindSelect}
         onSkillCategorySelect={handleSkillCategorySelect}
         onImportClick={() => setWizardOpen(true)}
@@ -144,7 +157,7 @@ export function App() {
       />
 
       <main className="flex flex-1 overflow-hidden">
-        {showDashboard ? (
+        {activeView === "dashboard" ? (
           <div className="flex-1 overflow-hidden">
             <DashboardPanel
               onImportClick={() => setWizardOpen(true)}
@@ -155,6 +168,14 @@ export function App() {
               onArtifactSelect={handleDashboardArtifactSelect}
             />
           </div>
+        ) : activeView === "market" ? (
+          <MarketPanel
+            onImportClick={() => setWizardOpen(true)}
+            onMarketPreview={(preview) => {
+              setMarketPreview(preview);
+              setWizardOpen(true);
+            }}
+          />
         ) : (
           <>
             <div className="w-72 flex-none border-r border-gray-800 overflow-y-auto">
@@ -186,9 +207,10 @@ export function App() {
 
       {wizardOpen && (
         <ImportWizard
-          onClose={() => setWizardOpen(false)}
+          onClose={() => { setWizardOpen(false); setMarketPreview(null); }}
           onInstalled={handleInstalled}
           onOpenSettings={() => setSettingsOpen(true)}
+          initialPreview={marketPreview ?? undefined}
         />
       )}
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}

@@ -120,26 +120,63 @@ fn collect_body_warnings(
         "Edit tool",
         "MultiEdit",
     ];
-    if matches!(target, Target::Codex { .. }) && claude_terms.iter().any(|term| body.contains(term))
+    if matches!(target, Target::Codex { .. } | Target::Opencode { .. })
+        && claude_terms.iter().any(|term| body.contains(term))
     {
-        warnings.push(
-            "Mentions Claude Code-specific tools or workflow; review before using in Codex.".into(),
-        );
+        warnings.push(format!(
+            "Mentions Claude Code-specific tools or workflow; review before using in {}.",
+            target.tool_id()
+        ));
         *risk_level = (*risk_level).max(CompatibilityRiskLevel::Medium);
     }
 
-    let high_risk_patterns = [
-        "rm -rf", "sudo ", "curl ", "wget ", "| sh", "| bash", "chmod ", "chown ", ".bashrc",
-        ".zshrc", ".ssh/", "api_key", "secret", "password",
+    struct RiskCategory {
+        patterns: &'static [&'static str],
+        message: &'static str,
+    }
+    let risk_categories: &[RiskCategory] = &[
+        RiskCategory {
+            patterns: &["| sh", "| bash"],
+            message: "Downloads and directly executes remote code — if the source is compromised, your machine runs whatever the attacker sends.",
+        },
+        RiskCategory {
+            patterns: &["rm -rf"],
+            message: "Uses destructive file deletion commands that could permanently erase your files or directories.",
+        },
+        RiskCategory {
+            patterns: &["sudo "],
+            message: "Runs commands as administrator, bypassing system security protections.",
+        },
+        RiskCategory {
+            patterns: &["curl ", "wget "],
+            message: "Downloads content from the internet, which the AI may then execute or write to disk.",
+        },
+        RiskCategory {
+            patterns: &["chmod ", "chown "],
+            message: "Modifies file permissions or ownership — may create new executable programs on your machine.",
+        },
+        RiskCategory {
+            patterns: &[".bashrc", ".zshrc"],
+            message: "Modifies your shell configuration — changes run automatically every time you open a terminal.",
+        },
+        RiskCategory {
+            patterns: &[".ssh/"],
+            message: "Touches your SSH keys — these control secure access to remote servers and repositories.",
+        },
+        RiskCategory {
+            patterns: &["api_key", "secret", "password"],
+            message: "References credentials or secrets — the AI could accidentally expose or overwrite sensitive data.",
+        },
     ];
-    if high_risk_patterns
-        .iter()
-        .any(|pattern| lower.contains(&pattern.to_ascii_lowercase()))
-    {
-        warnings.push(
-            "Contains shell, network, credential, or destructive-operation references; inspect before installing.".into(),
-        );
-        *risk_level = (*risk_level).max(CompatibilityRiskLevel::High);
+    for category in risk_categories {
+        if category
+            .patterns
+            .iter()
+            .any(|p| lower.contains(&p.to_ascii_lowercase()))
+        {
+            warnings.push(category.message.into());
+            *risk_level = (*risk_level).max(CompatibilityRiskLevel::High);
+        }
     }
 }
 

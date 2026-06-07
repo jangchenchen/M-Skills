@@ -17,6 +17,114 @@
   "close": "关闭",
   "back": "← 返回",
   "dashboard": "仪表盘",
+  "skillsMarket": "Skills 市场",
+  "market": {
+    "kicker": "第三方发现",
+    "title": "Skills 市场",
+    "subtitle": "M-Skills 不自己运营市场。这个视图先记录哪些第三方 Skills 市场明确提供可接入路径；用户选中的 Skill 仍然必须回到预览、审计和确认安装流程。",
+    "importAction": "通过 URL 导入",
+    "decisionTitle": "当前接入判断",
+    "decision": {
+      "0": "优先接明确公开的 API 或 MCP，而不是直接套网页。",
+      "1": "除非对方允许嵌入且安装路径仍回到 M-Skills，否则不使用 iframe 套壳。",
+      "2": "任何市场里选中的 Skill，都必须走现有 raw URL 或草稿导入流程后才能写文件。"
+    },
+    "providersTitle": "已确认候选",
+    "providersSubtitle": "这些来源公开了可构建的接入信息；当前只记录接入判断，不自动安装。",
+    "evidence": "接入依据",
+    "integration": "M-Skills 接入方式",
+    "searchPlaceholder": "跨注册表搜索 Skills…",
+    "searchButton": "搜索",
+    "searching": "搜索中…",
+    "noResults": "未找到相关 Skill。",
+    "previewButton": "预览",
+    "previewing": "加载预览…",
+    "providerTab": {
+      "all": "全部",
+      "skillsmd": "SkillsMD",
+      "agent-skills-index": "Agent Skills Index"
+    },
+    "providerBadge": {
+      "skillsmd": "SkillsMD",
+      "agent-skills-index": "ASI"
+    },
+    "hasSkillMd": "SKILL.md",
+    "noSkillMd": "无 SKILL.md",
+    "providerError": "{{provider}} 返回错误：{{message}}",
+    "rateLimitedCountdown": "{{provider}} 请求限流 — {{seconds}} 秒后可重试",
+    "rateLimitedReady": "{{provider}} 限流已解除",
+    "retryButton": "重试",
+    "cachedResults": "缓存结果（不超过 60 秒）",
+    "stars": "★ {{count}}",
+    "openDocs": "文档 / API",
+    "openMarket": "打开市场",
+    "providers": {
+      "skillsmd": {
+        "name": "SkillsMD",
+        "scope": "开放 Agent Skills 注册表",
+        "status": "API 可接",
+        "summary": "最适合作为第一批只读市场外壳：它提供公开搜索和详情接口，并定位为开放注册表。",
+        "evidence": {
+          "0": "公开 REST API，不需要认证。",
+          "1": "文档列出了搜索、排行榜、统计和仓库详情接口。",
+          "2": "文档说明支持 CORS，并要求客户端合理缓存。"
+        },
+        "actions": {
+          "0": "作为社区 Skill 发现的第一候选来源。",
+          "1": "把仓库结果解析到 raw SKILL.md 后再进入预览。",
+          "2": "本地缓存响应，并在安装前跑兼容性评审。"
+        }
+      },
+      "agentSkillsIndex": {
+        "name": "Agent Skills Index",
+        "scope": "大型公开 Skill 索引",
+        "status": "API 可接",
+        "summary": "强第二候选：公开详情接口包含 Skill 元数据和 SKILL.md 内容。",
+        "evidence": {
+          "0": "公开接口不需要认证。",
+          "1": "API 支持分页 Skill 搜索、分类和单个 Skill 详情。",
+          "2": "文档写明每个 IP 每分钟 100 次请求限制。"
+        },
+        "actions": {
+          "0": "可用于更宽的发现和分类浏览。",
+          "1": "把返回的 SKILL.md 内容当作不可信导入输入。",
+          "2": "先暂存内容，再执行审计和确认写入。"
+        }
+      },
+      "agensi": {
+        "name": "Agensi",
+        "scope": "商业 SKILL.md 市场",
+        "status": "MCP 路径",
+        "summary": "适合未来做连接器，但它公开的接入方式更偏 agent MCP，不是简单网页嵌入。",
+        "evidence": {
+          "0": "免费目录搜索通过 Agensi MCP server 暴露。",
+          "1": "MCP 提供搜索、热门、分类、详情、安装和账号工具。",
+          "2": "付费安装走 credits，并需要用户确认。"
+        },
+        "actions": {
+          "0": "作为未来 MCP 连接器保留，不作为第一版网页套壳。",
+          "1": "不允许它的 install 工具直接写入 M-Skills 目标目录。",
+          "2": "付费流程必须显式处理账号和购买状态。"
+        }
+      },
+      "larryBrain": {
+        "name": "LarryBrain",
+        "scope": "偏 OpenClaw 的 Skill 市场",
+        "status": "API 受限",
+        "summary": "对 OpenClaw 风格 Skill 有价值；公开搜索可用，高级下载需要 API key。",
+        "evidence": {
+          "0": "市场搜索公开，不需要认证。",
+          "1": "免费 Skill 文件下载可以不带 API key。",
+          "2": "高级访问需要 x-api-key 请求头，并且 API 有限流。"
+        },
+        "actions": {
+          "0": "只在 OpenClaw 风格 Skill 兼容性明确后接入。",
+          "1": "高级访问必须作为显式用户凭证流程处理。",
+          "2": "下载文件仍然要走审计和确认安装路径。"
+        }
+      }
+    }
+  },
   "localLibrary": "本地制品库",
   "readyArtifacts": "就绪",
   "scanOk": "扫描正常",

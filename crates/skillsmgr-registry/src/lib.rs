@@ -84,6 +84,7 @@ pub struct RegistryEvent {
     pub target: Option<String>,
     pub succeeded: bool,
     pub error_message: Option<String>,
+    pub metadata_json: Option<String>,
     pub occurred_at: DateTime<Utc>,
 }
 
@@ -93,6 +94,24 @@ pub struct RecordEventInput {
     pub target: Option<String>,
     pub succeeded: bool,
     pub error_message: Option<String>,
+    pub metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistrySnapshot {
+    pub id: Uuid,
+    pub installation_id: Uuid,
+    pub snapshot_path: PathBuf,
+    pub content_sha256: String,
+    pub reason: String,
+    pub created_at: DateTime<Utc>,
+}
+
+pub struct SnapshotInput {
+    pub installation_id: Uuid,
+    pub snapshot_path: PathBuf,
+    pub content_sha256: String,
+    pub reason: String,
 }
 
 impl Registry {
@@ -164,8 +183,8 @@ impl Registry {
         let occurred_at = Utc::now().to_rfc3339();
         self.connection
             .execute(
-                "INSERT INTO events (id, event_type, artifact_name, target, succeeded, error_message, occurred_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO events (id, event_type, artifact_name, target, succeeded, error_message, metadata_json, occurred_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     id,
                     input.event_type,
@@ -173,6 +192,7 @@ impl Registry {
                     input.target,
                     input.succeeded as i32,
                     input.error_message,
+                    input.metadata_json,
                     occurred_at,
                 ],
             )
@@ -184,7 +204,7 @@ impl Registry {
         let mut stmt = self
             .connection
             .prepare(
-                "SELECT id, event_type, artifact_name, target, succeeded, error_message, occurred_at
+                "SELECT id, event_type, artifact_name, target, succeeded, error_message, metadata_json, occurred_at
                  FROM events
                  ORDER BY occurred_at DESC
                  LIMIT ?1",
@@ -193,7 +213,7 @@ impl Registry {
         let rows = stmt
             .query_map(params![limit as i64], |row| {
                 let id_str: String = row.get(0)?;
-                let occurred_at_str: String = row.get(6)?;
+                let occurred_at_str: String = row.get(7)?;
                 Ok((
                     id_str,
                     row.get::<_, String>(1)?,
@@ -201,6 +221,7 @@ impl Registry {
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, i32>(4)?,
                     row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                     occurred_at_str,
                 ))
             })
@@ -215,6 +236,7 @@ impl Registry {
                 target,
                 succeeded,
                 error_message,
+                metadata_json,
                 occurred_at_str,
             ) = row.map_err(registry_error)?;
             let id =
@@ -229,6 +251,7 @@ impl Registry {
                 target,
                 succeeded: succeeded != 0,
                 error_message,
+                metadata_json,
                 occurred_at,
             });
         }
@@ -252,6 +275,170 @@ impl Registry {
             .filter(|p| !std::path::Path::new(p).exists())
             .count();
         Ok(stale)
+    }
+
+    // ── Telemetry aggregate queries ─────────────────────────────────────────
+
+    pub fn event_counts_by_type(&self, since: DateTime<Utc>) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self
+            .connection
+            .prepare(
+                "SELECT event_type, COUNT(*) FROM events
+                 WHERE occurred_at >= ?1
+                 GROUP BY event_type ORDER BY COUNT(*) DESC",
+            )
+            .map_err(registry_error)?;
+        let rows = stmt
+            .query_map(params![since.to_rfc3339()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })
+            .map_err(registry_error)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(registry_error)
+    }
+
+    pub fn event_counts_by_target(&self, since: DateTime<Utc>) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self
+            .connection
+            .prepare(
+                "SELECT target, COUNT(*) FROM events
+                 WHERE target IS NOT NULL AND occurred_at >= ?1
+                 GROUP BY target ORDER BY COUNT(*) DESC",
+            )
+            .map_err(registry_error)?;
+        let rows = stmt
+            .query_map(params![since.to_rfc3339()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })
+            .map_err(registry_error)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(registry_error)
+    }
+
+    pub fn failure_reasons(
+        &self,
+        since: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self
+            .connection
+            .prepare(
+                "SELECT error_message, COUNT(*) FROM events
+                 WHERE succeeded = 0 AND error_message IS NOT NULL AND occurred_at >= ?1
+                 GROUP BY error_message ORDER BY COUNT(*) DESC LIMIT ?2",
+            )
+            .map_err(registry_error)?;
+        let rows = stmt
+            .query_map(params![since.to_rfc3339(), limit as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })
+            .map_err(registry_error)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(registry_error)
+    }
+
+    pub fn event_count_total(&self, since: DateTime<Utc>) -> Result<usize> {
+        self.connection
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE occurred_at >= ?1",
+                params![since.to_rfc3339()],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n as usize)
+            .map_err(registry_error)
+    }
+
+    // ── Snapshot management ──────────────────────────────────────────────────
+
+    pub fn record_snapshot(&mut self, input: SnapshotInput) -> Result<RegistrySnapshot> {
+        let id = Uuid::new_v4();
+        let created_at = Utc::now();
+        self.connection
+            .execute(
+                "INSERT INTO snapshots (id, installation_id, snapshot_path, content_sha256, reason, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    id.to_string(),
+                    input.installation_id.to_string(),
+                    input.snapshot_path.to_string_lossy(),
+                    input.content_sha256,
+                    input.reason,
+                    created_at.to_rfc3339(),
+                ],
+            )
+            .map_err(registry_error)?;
+        Ok(RegistrySnapshot {
+            id,
+            installation_id: input.installation_id,
+            snapshot_path: input.snapshot_path,
+            content_sha256: input.content_sha256,
+            reason: input.reason,
+            created_at,
+        })
+    }
+
+    pub fn snapshots_for_installation(
+        &self,
+        installation_id: Uuid,
+    ) -> Result<Vec<RegistrySnapshot>> {
+        let mut stmt = self
+            .connection
+            .prepare(
+                "SELECT id, installation_id, snapshot_path, content_sha256, reason, created_at
+                 FROM snapshots WHERE installation_id = ?1 ORDER BY created_at DESC",
+            )
+            .map_err(registry_error)?;
+        let rows = stmt
+            .query_map(params![installation_id.to_string()], read_registry_snapshot)
+            .map_err(registry_error)?;
+        let mut snapshots = Vec::new();
+        for row in rows {
+            snapshots.push(row.map_err(registry_error)?);
+        }
+        Ok(snapshots)
+    }
+
+    pub fn latest_snapshot(&self, installation_id: Uuid) -> Result<Option<RegistrySnapshot>> {
+        self.connection
+            .query_row(
+                "SELECT id, installation_id, snapshot_path, content_sha256, reason, created_at
+                 FROM snapshots WHERE installation_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                params![installation_id.to_string()],
+                read_registry_snapshot,
+            )
+            .optional()
+            .map_err(registry_error)
+    }
+
+    pub fn delete_snapshots_for_installation(&self, installation_id: Uuid) -> Result<usize> {
+        let deleted = self
+            .connection
+            .execute(
+                "DELETE FROM snapshots WHERE installation_id = ?1",
+                params![installation_id.to_string()],
+            )
+            .map_err(registry_error)?;
+        Ok(deleted)
+    }
+
+    pub fn source_for_artifact(&self, artifact_id: Uuid) -> Result<Option<Source>> {
+        let source_json: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT source_json FROM source_metadata WHERE artifact_id = ?1",
+                params![artifact_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(registry_error)?;
+        match source_json {
+            Some(json) => {
+                let source: Source = serde_json::from_str(&json)
+                    .map_err(|e| SkillsMgrError::Registry(e.to_string()))?;
+                Ok(Some(source))
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn artifact_by_name(&self, name: &str) -> Result<Option<RegistryArtifact>> {
@@ -549,14 +736,35 @@ impl Registry {
                     target TEXT,
                     succeeded INTEGER NOT NULL,
                     error_message TEXT,
+                    metadata_json TEXT,
                     occurred_at TEXT NOT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS events_occurred_at
                     ON events (occurred_at DESC);
+
+                CREATE TABLE IF NOT EXISTS snapshots (
+                    id TEXT PRIMARY KEY,
+                    installation_id TEXT NOT NULL,
+                    snapshot_path TEXT NOT NULL,
+                    content_sha256 TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (installation_id) REFERENCES installations(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS snapshots_installation_id
+                    ON snapshots (installation_id, created_at DESC);
                 ",
             )
-            .map_err(registry_error)
+            .map_err(registry_error)?;
+
+        // Column added after initial release; existing databases need ALTER TABLE.
+        let _ = self
+            .connection
+            .execute_batch("ALTER TABLE events ADD COLUMN metadata_json TEXT");
+
+        Ok(())
     }
 }
 
@@ -742,6 +950,27 @@ fn read_registry_skill_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<Regi
         summary_json: row.get(4)?,
         model: row.get(5)?,
         generated_at,
+    })
+}
+
+fn read_registry_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistrySnapshot> {
+    let created_at: String = row.get(5)?;
+    let created_at = DateTime::parse_from_rfc3339(&created_at)
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                5,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?
+        .with_timezone(&Utc);
+    Ok(RegistrySnapshot {
+        id: parse_uuid_row(row, 0)?,
+        installation_id: parse_uuid_row(row, 1)?,
+        snapshot_path: PathBuf::from(row.get::<_, String>(2)?),
+        content_sha256: row.get(3)?,
+        reason: row.get(4)?,
+        created_at,
     })
 }
 
@@ -1197,5 +1426,219 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(other.translated_text, "别的 skill");
+    }
+
+    #[test]
+    fn event_counts_by_type_aggregates_correctly() {
+        let mut registry = Registry::in_memory().unwrap();
+        for _ in 0..5 {
+            registry
+                .record_event(RecordEventInput {
+                    event_type: "install".into(),
+                    artifact_name: None,
+                    target: None,
+                    succeeded: true,
+                    error_message: None,
+                    metadata_json: None,
+                })
+                .unwrap();
+        }
+        for _ in 0..3 {
+            registry
+                .record_event(RecordEventInput {
+                    event_type: "scan".into(),
+                    artifact_name: None,
+                    target: None,
+                    succeeded: true,
+                    error_message: None,
+                    metadata_json: None,
+                })
+                .unwrap();
+        }
+        registry
+            .record_event(RecordEventInput {
+                event_type: "uninstall".into(),
+                artifact_name: None,
+                target: None,
+                succeeded: true,
+                error_message: None,
+                metadata_json: None,
+            })
+            .unwrap();
+
+        let since = DateTime::<Utc>::MIN_UTC;
+        let counts = registry.event_counts_by_type(since).unwrap();
+        let install_count = counts.iter().find(|(t, _)| t == "install").unwrap().1;
+        let scan_count = counts.iter().find(|(t, _)| t == "scan").unwrap().1;
+        let uninstall_count = counts.iter().find(|(t, _)| t == "uninstall").unwrap().1;
+        assert_eq!(install_count, 5);
+        assert_eq!(scan_count, 3);
+        assert_eq!(uninstall_count, 1);
+    }
+
+    #[test]
+    fn event_counts_by_target_groups_by_tool() {
+        let mut registry = Registry::in_memory().unwrap();
+        for _ in 0..4 {
+            registry
+                .record_event(RecordEventInput {
+                    event_type: "install".into(),
+                    artifact_name: None,
+                    target: Some("claude-code".into()),
+                    succeeded: true,
+                    error_message: None,
+                    metadata_json: None,
+                })
+                .unwrap();
+        }
+        for _ in 0..2 {
+            registry
+                .record_event(RecordEventInput {
+                    event_type: "install".into(),
+                    artifact_name: None,
+                    target: Some("codex".into()),
+                    succeeded: true,
+                    error_message: None,
+                    metadata_json: None,
+                })
+                .unwrap();
+        }
+
+        let since = DateTime::<Utc>::MIN_UTC;
+        let counts = registry.event_counts_by_target(since).unwrap();
+        assert_eq!(
+            counts.iter().find(|(t, _)| t == "claude-code").unwrap().1,
+            4
+        );
+        assert_eq!(counts.iter().find(|(t, _)| t == "codex").unwrap().1, 2);
+    }
+
+    #[test]
+    fn failure_reasons_returns_top_n() {
+        let mut registry = Registry::in_memory().unwrap();
+        for _ in 0..3 {
+            registry
+                .record_event(RecordEventInput {
+                    event_type: "install".into(),
+                    artifact_name: None,
+                    target: None,
+                    succeeded: false,
+                    error_message: Some("conflict".into()),
+                    metadata_json: None,
+                })
+                .unwrap();
+        }
+        registry
+            .record_event(RecordEventInput {
+                event_type: "install".into(),
+                artifact_name: None,
+                target: None,
+                succeeded: false,
+                error_message: Some("fs".into()),
+                metadata_json: None,
+            })
+            .unwrap();
+
+        let since = DateTime::<Utc>::MIN_UTC;
+        let reasons = registry.failure_reasons(since, 10).unwrap();
+        assert_eq!(reasons[0], ("conflict".to_string(), 3));
+        assert_eq!(reasons[1], ("fs".to_string(), 1));
+    }
+
+    #[test]
+    fn snapshot_record_and_retrieve() {
+        let mut registry = Registry::in_memory().unwrap();
+        let artifact = Artifact::new("demo", "Demo", None, ArtifactKind::Skill, Source::Unknown);
+        let installation = Installation::enabled(
+            &artifact,
+            Target::ClaudeCode {
+                scope: Scope::Global,
+            },
+            "/tmp/demo",
+        );
+        registry
+            .record_installation(&artifact, &installation)
+            .unwrap();
+        let installation_id = installation.id;
+        registry
+            .record_snapshot(SnapshotInput {
+                installation_id,
+                snapshot_path: PathBuf::from("/tmp/snapshots/abc"),
+                content_sha256: "sha123".into(),
+                reason: "pre_uninstall".into(),
+            })
+            .unwrap();
+
+        let snapshots = registry
+            .snapshots_for_installation(installation_id)
+            .unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].content_sha256, "sha123");
+        assert_eq!(snapshots[0].reason, "pre_uninstall");
+
+        let latest = registry.latest_snapshot(installation_id).unwrap().unwrap();
+        assert_eq!(latest.id, snapshots[0].id);
+
+        let deleted = registry
+            .delete_snapshots_for_installation(installation_id)
+            .unwrap();
+        assert_eq!(deleted, 1);
+        assert!(registry.latest_snapshot(installation_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn source_for_artifact_returns_stored_source() {
+        let mut registry = Registry::in_memory().unwrap();
+        let artifact = Artifact::new(
+            "demo",
+            "Demo",
+            None,
+            ArtifactKind::Skill,
+            Source::GitHub {
+                url: "https://github.com/example/demo".into(),
+                rev: "abc123".into(),
+            },
+        );
+        let installation = Installation::enabled(
+            &artifact,
+            Target::ClaudeCode {
+                scope: Scope::Global,
+            },
+            "/tmp/demo",
+        );
+        registry
+            .record_installation(&artifact, &installation)
+            .unwrap();
+
+        let source = registry.source_for_artifact(artifact.id).unwrap().unwrap();
+        assert_eq!(
+            source,
+            Source::GitHub {
+                url: "https://github.com/example/demo".into(),
+                rev: "abc123".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn metadata_json_stored_and_retrieved() {
+        let mut registry = Registry::in_memory().unwrap();
+        registry
+            .record_event(RecordEventInput {
+                event_type: "draft_confirm".into(),
+                artifact_name: Some("demo".into()),
+                target: Some("codex".into()),
+                succeeded: true,
+                error_message: None,
+                metadata_json: Some(r#"{"sourceKind":"adaptation"}"#.into()),
+            })
+            .unwrap();
+
+        let events = registry.recent_events(1).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].metadata_json.as_deref(),
+            Some(r#"{"sourceKind":"adaptation"}"#)
+        );
     }
 }

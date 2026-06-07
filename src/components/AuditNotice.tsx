@@ -26,6 +26,21 @@ export function RiskBadge({ level }: { level: AuditSeverity }) {
   );
 }
 
+function warningDescription(
+  t: (key: string, opts?: Record<string, unknown>) => string,
+  w: AuditWarningDto
+): string {
+  const kind = w.kind;
+  const detailKey = w.detailKey;
+  if (detailKey) {
+    const specific = t(`warningExplain.${kind}.${detailKey}`, { defaultValue: "" });
+    if (specific) return specific;
+  }
+  const fallback = t(`warningExplain.${kind}._default`, { defaultValue: "" });
+  if (fallback) return fallback;
+  return w.message;
+}
+
 export function WarningsSection({
   warnings,
 }: {
@@ -53,16 +68,33 @@ export function WarningsSection({
             key={sev}
             className={`rounded border px-3 py-2 ${bucketStyles[sev]}`}
           >
-            <p className="text-xs font-semibold mb-1">
+            <p className="text-xs font-semibold mb-1.5">
               {t(`severity.${sev}`)} ({buckets[sev].length})
             </p>
-            <ul className="space-y-1">
+            <ul className="space-y-2.5">
               {buckets[sev].map((w, i) => (
                 <li key={i} className="text-xs">
-                  <span className="font-mono opacity-80">
-                    {w.path || "(total)"}
-                  </span>{" "}
-                  — [{t(`warningKind.${camelCaseKind(w.kind)}`)}] {w.message}
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <span className="font-mono opacity-70 text-[10px]">
+                      {w.path || "(total)"}
+                    </span>
+                    <span className="opacity-50">·</span>
+                    <span className="font-medium">
+                      {t(`warningKind.${camelCaseKind(w.kind)}`)}
+                    </span>
+                  </div>
+                  <p className="leading-relaxed opacity-90">
+                    {warningDescription(t, w)}
+                  </p>
+                  {w.detail && (
+                    <p className="mt-0.5 text-[10px] opacity-60">
+                      {t("warningEvidence")}:
+                      {" "}
+                      <code className="px-1 py-0.5 rounded bg-black/30 font-mono">
+                        {w.detail}
+                      </code>
+                    </p>
+                  )}
                 </li>
               ))}
             </ul>

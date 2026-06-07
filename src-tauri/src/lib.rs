@@ -63,12 +63,18 @@ pub fn run() {
             let translations = Arc::new(TranslationManager::new(registry, primary));
             translations.set_fallback(fallback);
 
+            let snapshot_dir = app_data_dir.join("snapshots");
+            std::fs::create_dir_all(&snapshot_dir).ok();
+
             app.manage(AppState {
                 service,
                 translations,
                 translate_config_path,
                 pending_import: Mutex::new(None),
+                pending_market_origin: Mutex::new(None),
                 summary_failures: Arc::new(summary::SummaryFailureCache::new()),
+                snapshot_dir,
+                market_cache: state::MarketSearchCache::new(),
             });
             Ok(())
         })
@@ -86,6 +92,9 @@ pub fn run() {
             commands::test_translate_provider,
             commands::review_import,
             commands::classify_skill_request,
+            commands::search_github_skills,
+            commands::search_market_skills,
+            commands::preview_market_skill,
             commands::check_path_exists,
             commands::review_artifact_compatibility,
             commands::preview_adapt_skill_for_codex,
@@ -96,6 +105,11 @@ pub fn run() {
             commands::get_skill_summary,
             commands::generate_skill_summary,
             commands::get_dashboard,
+            commands::get_telemetry,
+            commands::check_for_updates,
+            commands::list_snapshots,
+            commands::confirm_rollback,
+            commands::preview_adapt_skill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

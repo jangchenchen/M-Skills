@@ -5,10 +5,14 @@ import type {
   ConfirmDraftInstallRequest,
   DashboardDto,
   ForkPreviewRequest,
+  GitHubSkillResultDto,
   ImportPreviewDto,
   InstallOutcomeDto,
   InstallationDto,
   InventoryDto,
+  MarketPreviewRequest,
+  MarketSearchRequest,
+  MarketSearchResultDto,
   ReviewOutcomeDto,
   RewriteSkillOutcomeDto,
   RewriteSkillRequest,
@@ -17,9 +21,12 @@ import type {
   SkillDraftPreviewDto,
   SkillSummaryDto,
   SkillSummaryRequest,
+  SnapshotDto,
   TargetDto,
+  TelemetryDto,
   TranslateConfigDto,
   TranslateOutcomeDto,
+  UpdateStatusDto,
 } from "./types";
 
 export function scan(cwd?: string): Promise<InventoryDto> {
@@ -57,6 +64,26 @@ export function classifySkillRequest(
   locale: string | null
 ): Promise<SkillIntentOutcomeDto> {
   return invoke("classify_skill_request", { input, locale });
+}
+
+export function searchGithubSkills(
+  query: string
+): Promise<GitHubSkillResultDto[]> {
+  return invoke("search_github_skills", { query });
+}
+
+// ── Market search ───────────────────────────────────────────────────────────
+
+export function searchMarketSkills(
+  request: MarketSearchRequest
+): Promise<MarketSearchResultDto> {
+  return invoke("search_market_skills", { request });
+}
+
+export function previewMarketSkill(
+  request: MarketPreviewRequest
+): Promise<ImportPreviewDto> {
+  return invoke("preview_market_skill", { request });
 }
 
 export function reviewArtifactCompatibility(
@@ -157,4 +184,43 @@ export function testTranslateProvider(
   apiKey: string | null
 ): Promise<string> {
   return invoke("test_translate_provider", { config, apiKey });
+}
+
+// ── Telemetry ────────────────────────────────────────────────────────────────
+
+export function getTelemetry(period?: string): Promise<TelemetryDto> {
+  return invoke("get_telemetry", { period: period ?? null });
+}
+
+// ── Update Detection + Rollback ──────────────────────────────────────────────
+
+export function checkForUpdates(
+  installation: InstallationDto
+): Promise<UpdateStatusDto> {
+  return invoke("check_for_updates", { installation });
+}
+
+export function listSnapshots(
+  installation: InstallationDto
+): Promise<SnapshotDto[]> {
+  return invoke("list_snapshots", { installation });
+}
+
+export function confirmRollback(
+  installation: InstallationDto,
+  snapshotId?: string
+): Promise<InstallationDto> {
+  return invoke("confirm_rollback", {
+    installation,
+    snapshotId: snapshotId ?? null,
+  });
+}
+
+// ── Cross-tool Adaptation ────────────────────────────────────────────────────
+
+export function previewAdaptSkill(
+  artifact: ArtifactDto,
+  targetTool: string
+): Promise<SkillDraftPreviewDto> {
+  return invoke("preview_adapt_skill", { artifact, targetTool });
 }

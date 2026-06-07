@@ -12,6 +12,13 @@ This issue is intentionally deferred from the Stage 1 Smart Add core. It can be
 implemented in Stage 3 discovery work unless the product needs searchable
 installation earlier.
 
+> **Status (2026-06-08): demoted to fallback.** Issue 015 shipped curated
+> registry search (SkillsMD + Agent Skills Index) as the primary discovery
+> path. GitHub Code Search is repo search — worse signal-to-noise and weaker
+> safety pre-signals than curated sources — so it is now positioned as the
+> long-tail / ground-truth fallback when curated sources return nothing, not as
+> the main market source. The spec below still stands for that fallback role.
+
 ## Acceptance Criteria
 
 - [ ] A backend command searches GitHub Code Search for `SKILL.md` files using

@@ -132,19 +132,37 @@ impl From<SkillsMgrError> for ErrorDto {
 
 // ── Skill draft (Issue 007 Batch 2) ──────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LineageDto {
-    /// "fork" or "adaptation".
+    /// Origin class. Draft writers use `fork` / `adaptation` / `edit`;
+    /// imports use `market` / `github` / `url` / `local`. See Issue 016.
     pub source_kind: String,
+    /// Market only: provider id (`skillsmd` / `agent-skills-index`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub provider_id: Option<String>,
+    /// Market only: provider-scoped id (e.g. `owner/repo`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub external_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub source_tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub source_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub source_url: Option<String>,
-    pub source_hash: String,
-    pub parent_name: String,
+    /// Pinned upstream commit/ref for GitHub-backed imports.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_rev: Option<String>,
+    /// Content sha256. Always set by draft writers (fork/adaptation/edit);
+    /// optional for imports (Issue 016 D1).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_hash: Option<String>,
+    /// Parent skill name. Always set by draft writers; absent for imports.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub parent_name: Option<String>,
+    /// RFC3339 fetch/install time (imports).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fetched_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +249,67 @@ pub struct SkillIntentOutcomeDto {
     pub reason: Option<String>,
     pub provider_kind: String,
     pub model: String,
+}
+
+// ── GitHub skill search ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubSkillResultDto {
+    pub name: String,
+    pub owner: String,
+    pub description: Option<String>,
+    pub html_url: String,
+    pub stars: u32,
+}
+
+// ── Market search (Skills Market) ───────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketSearchRequestDto {
+    pub query: String,
+    pub providers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketSkillCandidateDto {
+    pub provider_id: String,
+    pub external_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub repo_url: Option<String>,
+    pub stars: Option<u32>,
+    pub updated_at: Option<String>,
+    pub categories: Vec<String>,
+    pub has_skill_md: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketSearchResultDto {
+    pub query: String,
+    pub results: Vec<MarketSkillCandidateDto>,
+    pub provider_errors: Vec<MarketProviderErrorDto>,
+    pub cached: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketProviderErrorDto {
+    pub provider_id: String,
+    pub message: String,
+    pub is_rate_limited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketPreviewRequestDto {
+    pub provider_id: String,
+    pub external_id: String,
 }
 
 // ── AI skill summary (auto-generated post-install) ───────────────────────────
@@ -473,6 +552,65 @@ pub struct DashboardDto {
     pub registry_stale_count: usize,
 }
 
+// ── Telemetry ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryDto {
+    pub period_label: String,
+    pub scan_count: usize,
+    pub install_count: usize,
+    pub uninstall_count: usize,
+    pub adaptation_count: usize,
+    pub failure_count: usize,
+    pub top_failure_reasons: Vec<TelemetryReasonDto>,
+    pub target_distribution: Vec<TelemetryTargetDto>,
+    pub risk_distribution: Vec<TelemetryRiskDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryReasonDto {
+    pub reason: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryTargetDto {
+    pub target: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryRiskDto {
+    pub risk_level: String,
+    pub count: usize,
+}
+
+// ── Update detection + Rollback ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatusDto {
+    pub status: String,
+    pub current_content_sha256: Option<String>,
+    pub upstream_rev: Option<String>,
+    pub stored_rev: Option<String>,
+    pub snapshot_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotDto {
+    pub id: String,
+    pub installation_id: String,
+    pub content_sha256: String,
+    pub reason: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PresenceDto {
@@ -583,6 +721,10 @@ pub struct AuditWarningDto {
     pub kind: String,
     pub severity: AuditSeverityDto,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1410,6 +1552,8 @@ impl From<&AuditWarning> for AuditWarningDto {
             },
             severity: w.severity.into(),
             message: w.message.clone(),
+            detail: w.detail.clone(),
+            detail_key: w.detail_key.clone(),
         }
     }
 }

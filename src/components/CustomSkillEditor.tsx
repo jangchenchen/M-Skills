@@ -65,7 +65,7 @@ export function CustomSkillEditor({
     mutationFn: () => {
       const artifact: ArtifactDto = {
         id: "00000000-0000-0000-0000-000000000000",
-        name: lineage.parentName,
+        name: lineage.parentName ?? "",
         description: "",
         body: content,
         version: null,

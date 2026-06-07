@@ -6,17 +6,23 @@ import {
   classifySkillRequest,
   getTranslateConfig,
   install,
+  previewMarketSkill,
   previewImport,
   reviewImport,
   scan,
+  searchGithubSkills,
+  searchMarketSkills,
 } from "../api";
 import { useErrorMessage } from "../useErrorMessage";
 import type {
   AdapterStatusDto,
   ErrorDto,
+  GitHubSkillResultDto,
   ImportCandidateDto,
   ImportPreviewDto,
   InstallOutcomeDto,
+  MarketProviderErrorDto,
+  MarketSkillCandidateDto,
   ReviewOutcomeDto,
   SkillIntentOutcomeDto,
   TargetDto,
@@ -30,11 +36,17 @@ interface Props {
   onClose: () => void;
   onInstalled: (name: string, kind: ImportCandidateDto["artifact"]["kind"]) => void;
   onOpenSettings: () => void;
+  initialPreview?: ImportPreviewDto;
 }
 
 type Step = "input" | "preview" | "done";
 type ReviewState = "loading" | "ready" | "skipped" | "failed";
 type IntentState = "idle" | "loading" | "ready" | "failed";
+type SearchState = "idle" | "loading" | "ready" | "failed";
+type SearchResultSource = "market" | "github-fallback";
+type SmartAddSearchResult =
+  | { kind: "market"; candidate: MarketSkillCandidateDto }
+  | { kind: "github"; result: GitHubSkillResultDto };
 
 function targetKey(t: TargetDto): string {
   return `${t.tool}:${t.scope.type}`;
@@ -47,14 +59,19 @@ function intersectTargets(
   return targets.filter((t) => chipSelection.has(t.tool));
 }
 
-export function ImportWizard({ onClose, onInstalled, onOpenSettings }: Props) {
-  const [step, setStep] = useState<Step>("input");
+export function ImportWizard({ onClose, onInstalled, onOpenSettings, initialPreview }: Props) {
+  const [step, setStep] = useState<Step>(initialPreview ? "preview" : "input");
   const [pathOrUrl, setPathOrUrl] = useState("");
-  const [preview, setPreview] = useState<ImportPreviewDto | null>(null);
+  const [preview, setPreview] = useState<ImportPreviewDto | null>(initialPreview ?? null);
+  const initCandidate = initialPreview?.candidates[0] ?? null;
   const [selectedCandidate, setSelectedCandidate] =
-    useState<ImportCandidateDto | null>(null);
-  const [selectedTargets, setSelectedTargets] = useState<TargetDto[]>([]);
-  const [chipSelection, setChipSelection] = useState<Set<string>>(new Set());
+    useState<ImportCandidateDto | null>(initCandidate);
+  const [selectedTargets, setSelectedTargets] = useState<TargetDto[]>(
+    initCandidate?.compatibleTargets ?? []
+  );
+  const [chipSelection, setChipSelection] = useState<Set<string>>(
+    new Set(initCandidate?.compatibleTargets.map((t) => t.tool) ?? [])
+  );
   const [riskAck, setRiskAck] = useState(false);
   const [conflictAck, setConflictAck] = useState(false);
   const [outcomes, setOutcomes] = useState<InstallOutcomeDto[]>([]);
@@ -67,6 +84,11 @@ export function ImportWizard({ onClose, onInstalled, onOpenSettings }: Props) {
   const [intentOutcome, setIntentOutcome] =
     useState<SkillIntentOutcomeDto | null>(null);
   const [intentError, setIntentError] = useState<string | null>(null);
+  const [searchState, setSearchState] = useState<SearchState>("idle");
+  const [searchResults, setSearchResults] = useState<SmartAddSearchResult[]>([]);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchSource, setSearchSource] = useState<SearchResultSource | null>(null);
+  const [providerErrors, setProviderErrors] = useState<MarketProviderErrorDto[]>([]);
   const [pathExists, setPathExists] = useState(false);
   const qc = useQueryClient();
   const { t, i18n } = useTranslation("wizard");
@@ -96,6 +118,30 @@ export function ImportWizard({ onClose, onInstalled, onOpenSettings }: Props) {
   );
   const inputKind = pathExists && detectedInputKind === "askAi" ? "local" : detectedInputKind;
 
+  const applyPreview = (data: ImportPreviewDto) => {
+    setPreview(data);
+    setRiskAck(false);
+    setConflictAck(false);
+    setOutcomes([]);
+    if (data.candidates.length > 0) {
+      const first = data.candidates[0];
+      setSelectedCandidate(first);
+      setSelectedTargets(intersectTargets(chipSelection, first.compatibleTargets));
+    } else {
+      setSelectedCandidate(null);
+      setSelectedTargets([]);
+    }
+    setStep("preview");
+  };
+
+  const resetSearchResults = () => {
+    setSearchState("idle");
+    setSearchResults([]);
+    setSearchError(null);
+    setSearchSource(null);
+    setProviderErrors([]);
+  };
+
   useEffect(() => {
     const trimmed = pathOrUrl.trim();
     setPathExists(false);
@@ -117,25 +163,52 @@ export function ImportWizard({ onClose, onInstalled, onOpenSettings }: Props) {
   }, [pathOrUrl, detectedInputKind]);
 
   const previewMut = useMutation({
-    mutationFn: () => previewImport(pathOrUrl),
-    onSuccess: (data) => {
-      setPreview(data);
-      setRiskAck(false);
-      setConflictAck(false);
-      setOutcomes([]);
-      if (data.candidates.length > 0) {
-        const first = data.candidates[0];
-        setSelectedCandidate(first);
-        setSelectedTargets(
-          intersectTargets(chipSelection, first.compatibleTargets)
-        );
-      } else {
-        setSelectedCandidate(null);
-        setSelectedTargets([]);
-      }
-      setStep("preview");
-    },
+    mutationFn: (urlOverride?: string) => previewImport(urlOverride ?? pathOrUrl),
+    onSuccess: applyPreview,
   });
+
+  const marketPreviewMut = useMutation({
+    mutationFn: (candidate: MarketSkillCandidateDto) =>
+      previewMarketSkill({
+        providerId: candidate.providerId,
+        externalId: candidate.externalId,
+      }),
+    onSuccess: applyPreview,
+  });
+
+  async function runSmartAddSearch(query: string) {
+    setSearchState("loading");
+    setSearchResults([]);
+    setSearchError(null);
+    setSearchSource(null);
+    setProviderErrors([]);
+
+    try {
+      const market = await searchMarketSkills({
+        query,
+        providers: ["skillsmd", "agent-skills-index"],
+      });
+
+      setProviderErrors(market.providerErrors);
+
+      if (market.results.length > 0) {
+        setSearchResults(
+          market.results.map((candidate) => ({ kind: "market", candidate }))
+        );
+        setSearchSource("market");
+        setSearchState("ready");
+        return;
+      }
+
+      const github = await searchGithubSkills(query);
+      setSearchResults(github.map((result) => ({ kind: "github", result })));
+      setSearchSource("github-fallback");
+      setSearchState("ready");
+    } catch (err) {
+      setSearchError(errorMessage(err));
+      setSearchState("failed");
+    }
+  }
 
   const classifyMut = useMutation({
     mutationFn: () => {
@@ -146,10 +219,14 @@ export function ImportWizard({ onClose, onInstalled, onOpenSettings }: Props) {
       setIntentState("loading");
       setIntentOutcome(null);
       setIntentError(null);
+      resetSearchResults();
     },
     onSuccess: (data) => {
       setIntentOutcome(data);
       setIntentState("ready");
+      if (data.isInstallRequest && data.searchQuery) {
+        void runSmartAddSearch(data.searchQuery);
+      }
     },
     onError: (err) => {
       setIntentError(errorMessage(err));
@@ -227,6 +304,16 @@ export function ImportWizard({ onClose, onInstalled, onOpenSettings }: Props) {
     setIntentState("idle");
     setIntentOutcome(null);
     setIntentError(null);
+    resetSearchResults();
+  };
+
+  const onPickSearchResult = (result: SmartAddSearchResult) => {
+    if (result.kind === "market") {
+      marketPreviewMut.mutate(result.candidate);
+      return;
+    }
+    setPathOrUrl(result.result.htmlUrl);
+    previewMut.mutate(result.result.htmlUrl);
   };
 
   const onInputSubmit = () => {
@@ -234,7 +321,7 @@ export function ImportWizard({ onClose, onInstalled, onOpenSettings }: Props) {
       classifyMut.mutate();
       return;
     }
-    previewMut.mutate();
+    previewMut.mutate(undefined);
   };
 
   const onTargetToggle = (target: TargetDto, checked: boolean) => {
@@ -266,8 +353,18 @@ export function ImportWizard({ onClose, onInstalled, onOpenSettings }: Props) {
               value={pathOrUrl}
               onChange={onInputChange}
               onSubmit={onInputSubmit}
-              loading={previewMut.isPending || classifyMut.isPending}
-              error={previewMut.error ? errorMessage(previewMut.error) : undefined}
+              loading={
+                previewMut.isPending ||
+                marketPreviewMut.isPending ||
+                classifyMut.isPending
+              }
+              error={
+                previewMut.error
+                  ? errorMessage(previewMut.error)
+                  : marketPreviewMut.error
+                    ? errorMessage(marketPreviewMut.error)
+                    : undefined
+              }
               inputKind={inputKind}
               chipSelection={chipSelection}
               onChipToggle={onChipToggle}
@@ -276,6 +373,12 @@ export function ImportWizard({ onClose, onInstalled, onOpenSettings }: Props) {
               intentState={intentState}
               intentOutcome={intentOutcome}
               intentError={intentError}
+              searchState={searchState}
+              searchResults={searchResults}
+              searchError={searchError}
+              searchSource={searchSource}
+              providerErrors={providerErrors}
+              onPickSearchResult={onPickSearchResult}
               onOpenSettings={onOpenSettings}
             />
           )}
@@ -325,6 +428,12 @@ function InputStep({
   intentState,
   intentOutcome,
   intentError,
+  searchState,
+  searchResults,
+  searchError,
+  searchSource,
+  providerErrors,
+  onPickSearchResult,
   onOpenSettings,
 }: {
   value: string;
@@ -340,6 +449,12 @@ function InputStep({
   intentState: IntentState;
   intentOutcome: SkillIntentOutcomeDto | null;
   intentError: string | null;
+  searchState: SearchState;
+  searchResults: SmartAddSearchResult[];
+  searchError: string | null;
+  searchSource: SearchResultSource | null;
+  providerErrors: MarketProviderErrorDto[];
+  onPickSearchResult: (result: SmartAddSearchResult) => void;
   onOpenSettings: () => void;
 }) {
   const { t } = useTranslation("wizard");
@@ -451,6 +566,18 @@ function InputStep({
         </div>
       )}
 
+      {intentState === "ready" && intentOutcome?.isInstallRequest && (
+        <SearchResultsSection
+          state={searchState}
+          results={searchResults}
+          error={searchError}
+          source={searchSource}
+          providerErrors={providerErrors}
+          onPick={onPickSearchResult}
+          loading={loading}
+        />
+      )}
+
       {needsTargetSelection && !isEmpty && (
         <p className="text-xs text-amber-400">
           {t("smartAdd.submitGate.needTarget")}
@@ -459,15 +586,17 @@ function InputStep({
 
       {error && <p className="text-xs text-red-400">{error}</p>}
 
-      <div className="flex justify-end">
-        <button
-          onClick={onSubmit}
-          disabled={disabled}
-          className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded"
-        >
-          {loading ? t("loading") : actionLabel}
-        </button>
-      </div>
+      {!(intentState === "ready" && intentOutcome?.isInstallRequest) && (
+        <div className="flex justify-end">
+          <button
+            onClick={onSubmit}
+            disabled={disabled}
+            className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded"
+          >
+            {loading ? t("loading") : actionLabel}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -501,6 +630,171 @@ function IntentResult({ outcome }: { outcome: SkillIntentOutcomeDto }) {
       )}
       <p className="text-[10px] text-gray-600 font-mono mt-2">
         {outcome.providerKind} / {outcome.model}
+      </p>
+    </div>
+  );
+}
+
+function SearchResultsSection({
+  state,
+  results,
+  error,
+  source,
+  providerErrors,
+  onPick,
+  loading,
+}: {
+  state: SearchState;
+  results: SmartAddSearchResult[];
+  error: string | null;
+  source: SearchResultSource | null;
+  providerErrors: MarketProviderErrorDto[];
+  onPick: (result: SmartAddSearchResult) => void;
+  loading: boolean;
+}) {
+  const { t } = useTranslation("wizard");
+  const { t: tc } = useTranslation("common");
+
+  if (state === "loading") {
+    return (
+      <div className="rounded border border-gray-800 bg-gray-900/60 px-3 py-2">
+        <p className="text-xs text-gray-500 animate-pulse">
+          {t("smartAdd.askAi.searching")}
+        </p>
+      </div>
+    );
+  }
+
+  if (state === "failed") {
+    return (
+      <div className="rounded border border-amber-900/50 bg-amber-950/30 px-3 py-2 space-y-1">
+        <p className="text-xs text-amber-400">
+          {error ?? t("smartAdd.askAi.searchFailed")}
+        </p>
+        {providerErrors.map((providerError) => (
+          <p
+            key={providerError.providerId}
+            className="text-xs text-amber-300"
+          >
+            {tc("market.providerError", {
+              provider: tc(`market.providerBadge.${providerError.providerId}`),
+              message: providerError.message,
+            })}
+          </p>
+        ))}
+      </div>
+    );
+  }
+
+  if (state === "ready" && results.length === 0) {
+    return (
+      <div className="rounded border border-gray-800 bg-gray-900/60 px-3 py-2 space-y-1">
+        <p className="text-xs text-gray-400">
+          {t("smartAdd.askAi.noResults")}
+        </p>
+        {providerErrors.map((providerError) => (
+          <p
+            key={providerError.providerId}
+            className="text-xs text-amber-400"
+          >
+            {tc("market.providerError", {
+              provider: tc(`market.providerBadge.${providerError.providerId}`),
+              message: providerError.message,
+            })}
+          </p>
+        ))}
+        <p className="text-xs text-gray-500">
+          {t("smartAdd.askAi.manualHint")}
+        </p>
+      </div>
+    );
+  }
+
+  if (state !== "ready") return null;
+
+  return (
+    <div className="space-y-2">
+      <div className="space-y-1">
+        <p className="text-xs font-medium text-gray-400">
+          {source === "github-fallback"
+            ? t("smartAdd.askAi.fallbackResults")
+            : t("smartAdd.askAi.searchResults")}
+        </p>
+        {providerErrors.map((providerError) => (
+          <p
+            key={providerError.providerId}
+            className="text-xs text-amber-400"
+          >
+            {tc("market.providerError", {
+              provider: tc(`market.providerBadge.${providerError.providerId}`),
+              message: providerError.message,
+            })}
+          </p>
+        ))}
+      </div>
+      <ul className="space-y-1.5 max-h-56 overflow-y-auto">
+        {results.map((result) => (
+          <li
+            key={
+              result.kind === "market"
+                ? `${result.candidate.providerId}:${result.candidate.externalId}`
+                : result.result.htmlUrl
+            }
+            className="rounded border border-gray-800 bg-gray-900/60 px-3 py-2 flex items-start justify-between gap-2"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-sm text-gray-100 font-medium truncate">
+                {result.kind === "market"
+                  ? result.candidate.name
+                  : `${result.result.owner}/${result.result.name}`}
+              </p>
+              {(result.kind === "market"
+                ? result.candidate.description
+                : result.result.description) && (
+                <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">
+                  {result.kind === "market"
+                    ? result.candidate.description
+                    : result.result.description}
+                </p>
+              )}
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-gray-500">
+                <span className="rounded border border-gray-700 px-1.5 py-0.5 text-gray-300">
+                  {result.kind === "market"
+                    ? tc(`market.providerBadge.${result.candidate.providerId}`)
+                    : t("smartAdd.askAi.githubFallback")}
+                </span>
+                {result.kind === "market" && (
+                  <span className="truncate">
+                    {result.candidate.externalId}
+                  </span>
+                )}
+                {result.kind === "github" && (
+                  <span className="truncate">{result.result.htmlUrl}</span>
+                )}
+                {((result.kind === "market"
+                  ? result.candidate.stars
+                  : result.result.stars) ?? 0) > 0 && (
+                  <span>
+                    ★{" "}
+                    {result.kind === "market"
+                      ? result.candidate.stars
+                      : result.result.stars}
+                  </span>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={() => onPick(result)}
+              disabled={loading}
+              className="shrink-0 px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded"
+            >
+              {loading ? t("loading") : t("smartAdd.askAi.previewThis")}
+            </button>
+          </li>
+        ))}
+      </ul>
+      <p className="text-xs text-gray-500">
+        {t("smartAdd.askAi.manualHint")}
       </p>
     </div>
   );
