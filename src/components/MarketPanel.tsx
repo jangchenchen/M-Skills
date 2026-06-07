@@ -253,7 +253,17 @@ function CandidateCard({
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <ProviderBadge providerId={candidate.providerId} />
+        {(candidate.providerIds?.length
+          ? candidate.providerIds
+          : [candidate.providerId]
+        ).map((pid) => (
+          <ProviderBadge key={pid} providerId={pid} />
+        ))}
+        {(candidate.sourceCount ?? 1) > 1 && (
+          <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-emerald-400/30">
+            {t("market.multiSource", { count: candidate.sourceCount })}
+          </span>
+        )}
         {candidate.hasSkillMd ? (
           <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-emerald-400/30">
             {t("market.hasSkillMd")}

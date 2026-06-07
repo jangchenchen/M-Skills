@@ -424,6 +424,8 @@ export interface MarketSkillCandidateDto {
   updatedAt: string | null;
   categories: string[];
   hasSkillMd: boolean;
+  providerIds?: string[];
+  sourceCount?: number;
 }
 
 export interface MarketProviderErrorDto {

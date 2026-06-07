@@ -77,12 +77,11 @@ Item 11（市场数据源）已于 2026-06-08 拍板：SkillsMD + Agent Skills I
 
 ## 6. Skills 市场：015 之后的后续项
 
-Issue 015 已落地市场 MVP。下列是已识别、暂不切片的后续项；P0（P0a 来源 lineage、P0b 发现系统收拢）已拍板并将另立 issue，不在此表。
+Issue 015 已落地市场 MVP。**已落地（2026-06-08）**：P0a 来源 lineage（Issue 016）、P0b 发现系统收拢、P1a 跨源可信度聚合、以及来源徽章 UI + polish。下列是剩余的、暂不切片的后续项。
 
 | 项 | 内容 | 为什么先不做 | 重新评估时机 |
 |---|---|---|---|
-| **P1a 跨源可信度聚合** | `merge_and_dedup` 现在丢掉"被多个索引同时收录"的信号；加 `sourceCount` / `providerIds` 并据此加权排序 | P0a/P0b 优先；属体验增强、非闭环必需 | P0 两项落地后 |
-| **P1b 风险前置信号** | 确定性风险信号（shell / 网络 / 写文件 / frontmatter 异常）放到 **preview 顶部或结果展开态**——不上卡片角标（卡片无内容级审计数据，做角标会变 N+1 fetch） | 同上；依赖 review 输出已在 preview 具备 | P0 落地后，或与 Stage 1.2 安全 UI 合并 |
+| **P1b 风险前置信号** | 确定性风险信号（shell / 网络 / 写文件 / frontmatter 异常）放到 **preview 顶部或结果展开态**——不上卡片角标（卡片无内容级审计数据，做角标会变 N+1 fetch） | 依赖 review 输出已在 preview 具备 | 现在可启动，或与 Stage 1.2 安全 UI 合并 |
 | **P2 缓存持久化** | 磁盘缓存 + "上次同步" + 离线浏览（现为内存 60s，重启即失，见 `MarketSearchCache`） | 桌面加分项，护城河价值低于上面几项 | P1 收尾或出现离线诉求时 |
 | **Agensi MCP 连接器** | 让 M-Skills 当 MCP client；**仅作 discovery/preview**，其 install tool 不得越过 confirm-before-write | 新架构方向，需独立 issue + 决策 | 单独立项评估 |
 

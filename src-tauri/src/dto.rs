@@ -284,6 +284,12 @@ pub struct MarketSkillCandidateDto {
     pub updated_at: Option<String>,
     pub categories: Vec<String>,
     pub has_skill_md: bool,
+    /// All providers that indexed this skill (cross-source aggregation, P1a).
+    #[serde(default)]
+    pub provider_ids: Vec<String>,
+    /// Number of distinct providers that indexed it; used as a ranking weight.
+    #[serde(default)]
+    pub source_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

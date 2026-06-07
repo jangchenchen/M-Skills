@@ -1230,6 +1230,8 @@ async fn search_skillsmd(
                     .map(|s| s.to_string()),
                 categories: extract_string_array(item, "categories"),
                 has_skill_md: true,
+                provider_ids: vec!["skillsmd".into()],
+                source_count: 1,
             })
         })
         .collect())
@@ -1312,33 +1314,84 @@ async fn search_agent_skills_index(
                     .map(|s| s.to_string()),
                 categories: extract_string_array(item, "categories"),
                 has_skill_md,
+                provider_ids: vec!["agent-skills-index".into()],
+                source_count: 1,
             })
         })
         .collect())
 }
 
-fn merge_and_dedup(mut candidates: Vec<MarketSkillCandidateDto>) -> Vec<MarketSkillCandidateDto> {
+fn dedup_key(c: &MarketSkillCandidateDto) -> String {
+    // Collapse the same GitHub repo indexed by different providers into one row:
+    // normalize to lowercase `owner/repo`, tolerating case, a `.git` suffix, a
+    // trailing slash, and a missing repo_url (fall back to external_id).
+    let raw = c.repo_url.as_deref().unwrap_or(&c.external_id);
+    raw.rsplit("github.com/")
+        .next()
+        .unwrap_or(raw)
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .trim_matches('/')
+        .to_lowercase()
+}
+
+fn merge_market_candidate(base: &mut MarketSkillCandidateDto, other: MarketSkillCandidateDto) {
+    for pid in other.provider_ids {
+        if !base.provider_ids.contains(&pid) {
+            base.provider_ids.push(pid);
+        }
+    }
+    base.source_count = base.provider_ids.len() as u32;
+    if other.stars.unwrap_or(0) > base.stars.unwrap_or(0) {
+        base.stars = other.stars;
+    }
+    if base.description.is_none() {
+        base.description = other.description;
+    }
+    if base.repo_url.is_none() {
+        base.repo_url = other.repo_url;
+    }
+    if base.updated_at.is_none() {
+        base.updated_at = other.updated_at;
+    }
+    // Prefer the source that can serve SKILL.md content directly.
+    base.has_skill_md = base.has_skill_md || other.has_skill_md;
+    for cat in other.categories {
+        if !base.categories.contains(&cat) {
+            base.categories.push(cat);
+        }
+    }
+}
+
+fn merge_and_dedup(candidates: Vec<MarketSkillCandidateDto>) -> Vec<MarketSkillCandidateDto> {
     use std::collections::HashMap;
 
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut out: Vec<MarketSkillCandidateDto> = Vec::new();
 
-    candidates.sort_by(|a, b| b.stars.unwrap_or(0).cmp(&a.stars.unwrap_or(0)));
+    for mut candidate in candidates {
+        if candidate.provider_ids.is_empty() {
+            candidate.provider_ids = vec![candidate.provider_id.clone()];
+        }
+        candidate.source_count = candidate.provider_ids.len() as u32;
 
-    for candidate in candidates {
-        let key = candidate
-            .repo_url
-            .clone()
-            .unwrap_or_else(|| format!("{}:{}", candidate.provider_id, candidate.external_id));
-        if let Some(&idx) = seen.get(&key) {
-            if candidate.stars.unwrap_or(0) > out[idx].stars.unwrap_or(0) {
-                out[idx] = candidate;
+        let key = dedup_key(&candidate);
+        match seen.get(&key) {
+            Some(&idx) => merge_market_candidate(&mut out[idx], candidate),
+            None => {
+                seen.insert(key, out.len());
+                out.push(candidate);
             }
-        } else {
-            seen.insert(key, out.len());
-            out.push(candidate);
         }
     }
+
+    // Rank by cross-source confidence first, then stars: a skill two indexes
+    // agree on outranks a single-index entry even with fewer stars.
+    out.sort_by(|a, b| {
+        b.source_count
+            .cmp(&a.source_count)
+            .then_with(|| b.stars.unwrap_or(0).cmp(&a.stars.unwrap_or(0)))
+    });
     out
 }
 
@@ -3322,6 +3375,8 @@ mod market_tests {
                     updated_at: item["updated_at"].as_str().map(|s| s.to_string()),
                     categories: extract_string_array(item, "categories"),
                     has_skill_md: true,
+                    provider_ids: vec!["skillsmd".into()],
+                    source_count: 1,
                 })
             })
             .collect()
@@ -3349,6 +3404,8 @@ mod market_tests {
                     updated_at: item["updated_at"].as_str().map(|s| s.to_string()),
                     categories: extract_string_array(item, "categories"),
                     has_skill_md,
+                    provider_ids: vec!["agent-skills-index".into()],
+                    source_count: 1,
                 })
             })
             .collect()
@@ -3380,7 +3437,7 @@ mod market_tests {
     }
 
     #[test]
-    fn deduplication_keeps_higher_stars() {
+    fn deduplication_aggregates_sources_and_keeps_higher_stars() {
         let skillsmd = parse_skillsmd(&skillsmd_mock_response());
         let asi = parse_asi(&asi_mock_response());
 
@@ -3392,8 +3449,16 @@ mod market_tests {
 
         let lint_entries: Vec<_> = deduped.iter().filter(|c| c.name == "lint-fix").collect();
         assert_eq!(lint_entries.len(), 1);
+        // Higher star count is preserved across the merge.
         assert_eq!(lint_entries[0].stars, Some(15));
-        assert_eq!(lint_entries[0].provider_id, "agent-skills-index");
+        // Both providers are aggregated rather than one discarded (P1a).
+        assert_eq!(lint_entries[0].source_count, 2);
+        assert!(lint_entries[0]
+            .provider_ids
+            .contains(&"skillsmd".to_string()));
+        assert!(lint_entries[0]
+            .provider_ids
+            .contains(&"agent-skills-index".to_string()));
     }
 
     #[test]
@@ -3414,6 +3479,94 @@ mod market_tests {
         assert!(deduped.is_empty());
     }
 
+    fn market_candidate(
+        provider: &str,
+        external_id: &str,
+        repo_url: Option<&str>,
+        stars: Option<u32>,
+    ) -> MarketSkillCandidateDto {
+        MarketSkillCandidateDto {
+            provider_id: provider.into(),
+            external_id: external_id.into(),
+            name: external_id.rsplit('/').next().unwrap_or(external_id).into(),
+            description: None,
+            repo_url: repo_url.map(|s| s.into()),
+            stars,
+            updated_at: None,
+            categories: Vec::new(),
+            has_skill_md: false,
+            provider_ids: vec![provider.into()],
+            source_count: 1,
+        }
+    }
+
+    #[test]
+    fn cross_source_dedup_aggregates_and_ranks_first() {
+        let mut skillsmd = market_candidate(
+            "skillsmd",
+            "owner/repo",
+            Some("https://github.com/owner/repo"),
+            Some(10),
+        );
+        skillsmd.categories = vec!["lint".into()];
+        let mut asi = market_candidate(
+            "agent-skills-index",
+            "owner/repo",
+            Some("https://github.com/owner/repo"),
+            Some(5),
+        );
+        asi.description = Some("desc".into());
+        asi.has_skill_md = true;
+        asi.categories = vec!["formatting".into()];
+        // Single-source entry with far more stars must still rank below the
+        // two-source one.
+        let solo = market_candidate(
+            "skillsmd",
+            "other/solo",
+            Some("https://github.com/other/solo"),
+            Some(999),
+        );
+
+        let out = merge_and_dedup(vec![solo, skillsmd, asi]);
+        assert_eq!(out.len(), 2, "same repo across providers collapses to one");
+
+        let merged = &out[0];
+        assert_eq!(merged.source_count, 2);
+        assert!(merged.provider_ids.contains(&"skillsmd".to_string()));
+        assert!(merged
+            .provider_ids
+            .contains(&"agent-skills-index".to_string()));
+        assert_eq!(merged.stars, Some(10), "keeps the higher star count");
+        assert_eq!(
+            merged.description.as_deref(),
+            Some("desc"),
+            "fills gaps from the other source"
+        );
+        assert!(merged.has_skill_md, "prefers the source serving SKILL.md");
+        assert!(merged.categories.contains(&"lint".to_string()));
+        assert!(merged.categories.contains(&"formatting".to_string()));
+
+        assert_eq!(
+            out[1].external_id, "other/solo",
+            "single-source ranks below two-source despite more stars"
+        );
+    }
+
+    #[test]
+    fn dedup_key_normalizes_repo_identity() {
+        // Case difference + .git suffix on one, missing repo_url on the other.
+        let a = market_candidate(
+            "skillsmd",
+            "Owner/Repo",
+            Some("https://github.com/Owner/Repo.git"),
+            None,
+        );
+        let b = market_candidate("agent-skills-index", "owner/repo", None, None);
+        let out = merge_and_dedup(vec![a, b]);
+        assert_eq!(out.len(), 1, "normalized repo identity dedups to one");
+        assert_eq!(out[0].source_count, 2);
+    }
+
     #[tokio::test]
     async fn cache_returns_cached_flag_on_hit() {
         let cache = crate::state::MarketSearchCache::new();
@@ -3430,6 +3583,8 @@ mod market_tests {
                 updated_at: None,
                 categories: Vec::new(),
                 has_skill_md: true,
+                provider_ids: vec!["skillsmd".into()],
+                source_count: 1,
             }],
             provider_errors: Vec::new(),
             cached: false,

@@ -56,6 +56,7 @@
     "retryButton": "重试",
     "cachedResults": "缓存结果（不超过 60 秒）",
     "stars": "★ {{count}}",
+    "multiSource": "{{count}} 个来源",
     "openDocs": "文档 / API",
     "openMarket": "打开市场",
     "providers": {

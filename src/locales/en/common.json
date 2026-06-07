@@ -56,6 +56,7 @@
     "retryButton": "Retry",
     "cachedResults": "Cached results (less than 60 s old)",
     "stars": "★ {{count}}",
+    "multiSource": "{{count}} sources",
     "openDocs": "Docs / API",
     "openMarket": "Open market",
     "providers": {
